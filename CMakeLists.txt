@@ -1,0 +1,110 @@
+cmake_minimum_required(VERSION 3.28)
+
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+  set(CMAKE_CUDA_ARCHITECTURES 89 120)
+endif()
+
+project(comptime_megakernel LANGUAGES CXX CUDA)
+
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_CUDA_STANDARD 20)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+endif()
+
+# Warnings: interface target so they hit our code only, not googletest.
+option(WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
+add_library(project_warnings INTERFACE)
+set(WARNING_FLAGS
+  -Wall -Wextra -Wpedantic
+  -Wshadow -Wconversion -Wsign-conversion
+  -Wold-style-cast -Wcast-align -Wnull-dereference
+  -Wdouble-promotion -Wformat=2 -Wimplicit-fallthrough
+  -Wnon-virtual-dtor -Woverloaded-virtual
+)
+if(WARNINGS_AS_ERRORS)
+  list(APPEND WARNING_FLAGS -Werror)
+endif()
+# Quoted so the list stays inside the genex.
+target_compile_options(project_warnings INTERFACE "$<$<COMPILE_LANGUAGE:CXX>:${WARNING_FLAGS}>")
+
+# libstdc++ bounds/precondition checks in Debug.
+add_compile_definitions($<$<AND:$<CONFIG:Debug>,$<COMPILE_LANGUAGE:CXX>>:_GLIBCXX_ASSERTIONS>)
+
+# Sanitizers: global so googletest is instrumented too (mixing causes false positives).
+# Host code only; use compute-sanitizer for kernels.
+option(ENABLE_SANITIZERS "Build with ASan + UBSan" OFF)
+if(ENABLE_SANITIZERS)
+  add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-fsanitize=address,undefined;-fno-omit-frame-pointer;-fno-sanitize-recover=all>")
+  add_link_options(-fsanitize=address,undefined)
+endif()
+
+set(GEN_DIR ${CMAKE_BINARY_DIR}/generated)
+
+add_library(gguf_header
+  tools/gguf_header/reader.cpp
+  tools/gguf_header/emitter.cpp
+)
+target_include_directories(gguf_header PUBLIC tools/gguf_header)
+target_link_libraries(gguf_header PRIVATE project_warnings)
+
+add_executable(gguf2hpp tools/gguf_header/main.cpp)
+target_link_libraries(gguf2hpp PRIVATE gguf_header project_warnings)
+
+# --- engine ---
+add_executable(engine src/main.cpp)
+target_link_libraries(engine PRIVATE project_warnings)
+
+set(MODEL_GGUF "" CACHE FILEPATH "GGUF to compile the engine for")
+if(MODEL_GGUF)
+  add_custom_command(
+    OUTPUT  ${GEN_DIR}/model.hpp
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${GEN_DIR}
+    COMMAND gguf2hpp ${MODEL_GGUF} ${GEN_DIR}/model.hpp
+    DEPENDS gguf2hpp ${MODEL_GGUF}
+    COMMENT "Generating model.hpp from ${MODEL_GGUF}"
+  )
+  target_sources(engine PRIVATE ${GEN_DIR}/model.hpp)
+  target_include_directories(engine PRIVATE ${GEN_DIR})
+else()
+  message(WARNING "MODEL_GGUF not set: engine builds without model.hpp")
+endif()
+
+# --- tests ---
+include(FetchContent)
+FetchContent_Declare(
+  googletest
+  GIT_REPOSITORY https://github.com/google/googletest.git
+  GIT_TAG        v1.17.0
+)
+FetchContent_MakeAvailable(googletest)
+
+enable_testing()
+include(GoogleTest)
+
+add_executable(smoke_test tests/smoke_test.cpp)
+target_link_libraries(smoke_test PRIVATE GTest::gtest_main project_warnings)
+gtest_discover_tests(smoke_test)
+
+set(TOY_GGUF ${CMAKE_SOURCE_DIR}/tests/data/toy.gguf)
+
+add_executable(reader_test tests/reader_test.cpp)
+target_link_libraries(reader_test PRIVATE gguf_header GTest::gtest_main project_warnings)
+target_compile_definitions(reader_test PRIVATE TOY_GGUF="${TOY_GGUF}")
+gtest_discover_tests(reader_test)
+
+# Enable at milestone 6, once the emitter works:
+# add_custom_command(
+#   OUTPUT  ${GEN_DIR}/toy.hpp
+#   COMMAND ${CMAKE_COMMAND} -E make_directory ${GEN_DIR}
+#   COMMAND gguf2hpp ${TOY_GGUF} ${GEN_DIR}/toy.hpp
+#   DEPENDS gguf2hpp ${TOY_GGUF}
+# )
+# target_sources(reader_test PRIVATE ${GEN_DIR}/toy.hpp)
+# target_include_directories(reader_test PRIVATE ${GEN_DIR})
