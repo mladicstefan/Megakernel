@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <memory>
 #include <span>
 #include <string_view>
 #include <type_traits>
@@ -162,5 +163,26 @@ struct Cursor {
     // u64 length, then that many bytes. The view points into data.
     // On failure pos is unchanged and the error names where the string starts.
     std::expected<std::string_view, Error> read_string();
+};
+
+// unique_ptr deleter for an mmap; carries the length munmap needs.
+struct Unmap {
+    std::size_t size = 0;
+    void        operator()(std::byte* p) const noexcept;
+};
+
+// Owns one read-only mmap of a file. unique_ptr makes it move-only and unmaps it once.
+struct MappedFile {
+    std::unique_ptr<std::byte, Unmap> map; // null when empty; an empty file is never mapped
+
+    static std::expected<MappedFile, Error> open(const char* path);
+
+    std::span<const std::byte> bytes() const {
+        // A moved-from deleter keeps its size, so check the pointer, not the size.
+        if (!map) {
+            return {};
+        }
+        return {map.get(), map.get_deleter().size};
+    }
 };
 } // namespace gguf
