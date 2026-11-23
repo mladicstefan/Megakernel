@@ -87,7 +87,8 @@ enum class ErrorKind {
     NestedArray,     // array of arrays: rejected, no model file uses them
     UnknownTensorType,
     TooManyDims,
-    BadAlignment,    // general.alignment is zero or not a power of two
+    BadShape,        // first dim is not a whole number of the dtype's blocks
+    BadAlignment,    // general.alignment is not an unsigned power of two
     BadTensorExtent, // offset + byte_size runs past the end of the file
     SizeOverflow,    // element count or byte size does not fit in u64
 };

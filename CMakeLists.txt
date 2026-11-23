@@ -47,12 +47,26 @@ endif()
 
 set(GEN_DIR ${CMAKE_BINARY_DIR}/generated)
 
+# xxHash, header-only: the repo root has no CMakeLists.txt, so this only downloads it.
+include(FetchContent)
+FetchContent_Declare(
+  xxhash
+  GIT_REPOSITORY https://github.com/Cyan4973/xxHash.git
+  GIT_TAG        v0.8.4
+  GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(xxhash)
+add_library(xxhash INTERFACE)
+# SYSTEM: our warning flags are not meant for a C header.
+target_include_directories(xxhash SYSTEM INTERFACE ${xxhash_SOURCE_DIR})
+target_compile_definitions(xxhash INTERFACE XXH_INLINE_ALL)
+
 add_library(gguf_header
   tools/gguf_header/reader.cpp
   tools/gguf_header/emitter.cpp
 )
 target_include_directories(gguf_header PUBLIC tools/gguf_header)
-target_link_libraries(gguf_header PRIVATE project_warnings)
+target_link_libraries(gguf_header PRIVATE project_warnings xxhash)
 
 add_executable(gguf2hpp tools/gguf_header/main.cpp)
 target_link_libraries(gguf2hpp PRIVATE gguf_header project_warnings)
@@ -96,7 +110,9 @@ set(TOY_GGUF ${CMAKE_SOURCE_DIR}/tests/data/toy.gguf)
 
 add_executable(reader_test tests/reader_test.cpp)
 target_link_libraries(reader_test PRIVATE gguf_header GTest::gtest_main project_warnings)
-target_compile_definitions(reader_test PRIVATE TOY_GGUF="${TOY_GGUF}")
+target_compile_definitions(reader_test PRIVATE
+  TOY_GGUF="${TOY_GGUF}"
+  QWEN_GGUF="${CMAKE_SOURCE_DIR}/models/Qwen_Qwen3-0.6B-bf16.gguf")
 gtest_discover_tests(reader_test)
 
 # Enable at milestone 6, once the emitter works:

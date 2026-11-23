@@ -2,11 +2,14 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <initializer_list>
 #include <string_view>
 #include <utility>
 #include <variant>
@@ -371,4 +374,241 @@ TEST(Parse, HugeKvCountIsTruncated) {
     ASSERT_FALSE(m.has_value());
     EXPECT_EQ(m.error().kind, ErrorKind::Truncated);
     EXPECT_EQ(m.error().pos, sizeof(Header));
+}
+
+namespace {
+// The tensor that starts last ends at the end of the file, give or take alignment padding.
+void expect_last_tensor_ends_file(const Model& m) {
+    ASSERT_FALSE(m.tensors.empty());
+    const auto          last = std::ranges::max_element(m.tensors, {}, &TensorInfo::offset);
+    const std::uint64_t end  = m.data_start + last->offset + last->byte_size;
+    EXPECT_LE(end, m.file_size);
+    EXPECT_LT(m.file_size - end, m.alignment);
+}
+
+// No metadata and one tensor info named "t", then zero padding to 32 and data_bytes of data.
+std::vector<std::byte> tensor_file(std::initializer_list<std::uint64_t> dims, std::uint32_t type,
+                                   std::uint64_t offset, std::size_t data_bytes) {
+    std::vector<std::byte> out;
+    put(out, Header{kMagic, kVersion, 1, 0});
+    put_string(out, "t");
+    put(out, static_cast<std::uint32_t>(dims.size()));
+    for (const std::uint64_t d : dims) {
+        put(out, d);
+    }
+    put(out, type);
+    put(out, offset);
+    out.resize((out.size() + 31) / 32 * 32 + data_bytes);
+    return out;
+}
+
+constexpr std::size_t kNDimsAt = sizeof(Header) + 8 + 1; // header, then the name "t"
+
+std::uint32_t id(TensorType t) {
+    return static_cast<std::uint32_t>(t);
+}
+
+// No tensors and one pair, general.alignment, with the given type id. The caller adds the value.
+std::vector<std::byte> alignment_file(std::uint32_t type) {
+    std::vector<std::byte> out;
+    put(out, Header{kMagic, kVersion, 0, 1});
+    put_string(out, "general.alignment");
+    put(out, type);
+    return out;
+}
+
+constexpr std::size_t kAlignmentAt = sizeof(Header) + 8 + 17 + 4; // header, key, type id
+} // namespace
+
+TEST(Parse, ReadsToyTensors) {
+    auto f = MappedFile::open(TOY_GGUF);
+    ASSERT_TRUE(f.has_value());
+    auto m = parse(f->bytes());
+    ASSERT_TRUE(m.has_value());
+    EXPECT_EQ(m->alignment, 32u);
+    EXPECT_EQ(m->data_start, 0x140u);
+    ASSERT_EQ(m->tensors.size(), 2u);
+
+    const auto& a = m->tensors[0];
+    EXPECT_EQ(a.name, "a");
+    EXPECT_EQ(a.n_dims, 2u);
+    EXPECT_EQ(a.dims[0], 3u); // numpy shape (2, 3), stored in ggml order
+    EXPECT_EQ(a.dims[1], 2u);
+    EXPECT_EQ(a.dtype, TensorType::F32);
+    EXPECT_EQ(a.offset, 0u);
+    EXPECT_EQ(a.element_count, 6u);
+    EXPECT_EQ(a.byte_size, 24u);
+
+    const auto& b = m->tensors[1];
+    EXPECT_EQ(b.name, "b");
+    EXPECT_EQ(b.n_dims, 1u);
+    EXPECT_EQ(b.dims[0], 4u);
+    EXPECT_EQ(b.dims[1], 1u); // unused dims are 1
+    EXPECT_EQ(b.dtype, TensorType::F16);
+    EXPECT_EQ(b.offset, 32u);
+    EXPECT_EQ(b.element_count, 4u);
+    EXPECT_EQ(b.byte_size, 8u);
+
+    expect_last_tensor_ends_file(*m);
+}
+
+// Expected values come from gguf-py's GGUFReader on the same file.
+TEST(Parse, ReadsQwen) {
+    if (!std::filesystem::exists(QWEN_GGUF)) {
+        GTEST_SKIP() << QWEN_GGUF << " not found";
+    }
+    auto f = MappedFile::open(QWEN_GGUF);
+    ASSERT_TRUE(f.has_value());
+    auto m = parse(f->bytes());
+    ASSERT_TRUE(m.has_value()) << "error kind " << static_cast<int>(m.error().kind) << " at "
+                               << m.error().pos;
+
+    EXPECT_EQ(m->metadata.size(), 27u);
+    EXPECT_EQ(std::get<std::string_view>(m->metadata[0].val), "qwen3");
+    EXPECT_EQ(m->tensors.size(), 311u);
+    EXPECT_EQ(m->alignment, 32u); // general.alignment is absent
+    EXPECT_EQ(m->data_start, 5951648u);
+
+    const auto embd = std::ranges::find(m->tensors, "token_embd.weight", &TensorInfo::name);
+    ASSERT_NE(embd, m->tensors.end());
+    EXPECT_EQ(embd->n_dims, 2u);
+    EXPECT_EQ(embd->dims[0], 1024u);
+    EXPECT_EQ(embd->dims[1], 151936u);
+    EXPECT_EQ(embd->dtype, TensorType::BF16);
+    EXPECT_EQ(embd->offset, 311164928u);
+    EXPECT_EQ(embd->byte_size, 311164928u);
+
+    for (const auto& t : m->tensors) {
+        EXPECT_TRUE(t.dtype == TensorType::BF16 || t.dtype == TensorType::F32) << t.name;
+    }
+    expect_last_tensor_ends_file(*m);
+}
+
+TEST(Parse, TensorFileHelperParses) {
+    const auto b = tensor_file({4}, id(TensorType::F32), 0, 16);
+    auto       m = parse(b);
+    ASSERT_TRUE(m.has_value());
+    EXPECT_EQ(m->tensors[0].byte_size, 16u);
+    expect_last_tensor_ends_file(*m);
+}
+
+TEST(Parse, RejectsTooManyDims) {
+    const auto b = tensor_file({1, 1, 1, 1, 1}, id(TensorType::F32), 0, 4);
+    auto       m = parse(b);
+    ASSERT_FALSE(m.has_value());
+    EXPECT_EQ(m.error().kind, ErrorKind::TooManyDims);
+    EXPECT_EQ(m.error().pos, kNDimsAt);
+}
+
+TEST(Parse, RejectsTensorTypeInEnumGap) {
+    const auto b = tensor_file({4}, 4, 0, 16); // 4 and 5 were removed from ggml
+    auto       m = parse(b);
+    ASSERT_FALSE(m.has_value());
+    EXPECT_EQ(m.error().kind, ErrorKind::UnknownTensorType);
+    EXPECT_EQ(m.error().pos, kNDimsAt + 4 + 8);
+}
+
+TEST(Parse, RejectsPartialBlock) {
+    const auto b = tensor_file({31}, id(TensorType::Q4_0), 0, 18); // Q4_0 blocks hold 32
+    auto       m = parse(b);
+    ASSERT_FALSE(m.has_value());
+    EXPECT_EQ(m.error().kind, ErrorKind::BadShape);
+    EXPECT_EQ(m.error().pos, sizeof(Header));
+}
+
+TEST(Parse, QuantizedByteSize) {
+    const auto b = tensor_file({64, 2}, id(TensorType::Q4_0), 0, 4 * 18);
+    auto       m = parse(b);
+    ASSERT_TRUE(m.has_value());
+    EXPECT_EQ(m->tensors[0].element_count, 128u);
+    EXPECT_EQ(m->tensors[0].byte_size, 4u * 18u); // 4 blocks of 32 elements, 18 bytes each
+}
+
+TEST(Parse, RejectsSizeOverflow) {
+    // The element count overflows, then the byte size: 2^62 F64s fit, their 2^65 bytes do not.
+    for (const auto& b : {tensor_file({1ull << 32, 1ull << 32}, id(TensorType::F32), 0, 0),
+                          tensor_file({1ull << 62}, id(TensorType::F64), 0, 0)}) {
+        auto m = parse(b);
+        ASSERT_FALSE(m.has_value());
+        EXPECT_EQ(m.error().kind, ErrorKind::SizeOverflow);
+        EXPECT_EQ(m.error().pos, sizeof(Header));
+    }
+}
+
+TEST(Parse, RejectsTensorPastEnd) {
+    for (const auto& b : {tensor_file({4}, id(TensorType::F32), 0, 15),
+                          tensor_file({4}, id(TensorType::F32), 8, 16),
+                          tensor_file({4}, id(TensorType::F32), UINT64_MAX, 16)}) {
+        auto m = parse(b);
+        ASSERT_FALSE(m.has_value());
+        EXPECT_EQ(m.error().kind, ErrorKind::BadTensorExtent);
+    }
+}
+
+TEST(Parse, UsesGeneralAlignment) {
+    auto b = alignment_file(id(ValueType::Uint32));
+    put<std::uint32_t>(b, 64);
+    auto m = parse(b);
+    ASSERT_TRUE(m.has_value());
+    EXPECT_EQ(m->alignment, 64u);
+    EXPECT_EQ(m->data_start, 64u); // pairs end at 57
+}
+
+TEST(Parse, RejectsBadAlignment) {
+    auto zero = alignment_file(id(ValueType::Uint32));
+    put<std::uint32_t>(zero, 0);
+    auto not_pow2 = alignment_file(id(ValueType::Uint32));
+    put<std::uint32_t>(not_pow2, 48);
+    auto negative = alignment_file(id(ValueType::Int32));
+    put<std::int32_t>(negative, 32);
+    auto text = alignment_file(id(ValueType::String));
+    put_string(text, "32");
+
+    for (const auto& b : {zero, not_pow2, negative, text}) {
+        auto m = parse(b);
+        ASSERT_FALSE(m.has_value());
+        EXPECT_EQ(m.error().kind, ErrorKind::BadAlignment);
+        EXPECT_EQ(m.error().pos, kAlignmentAt);
+    }
+}
+
+namespace {
+std::vector<std::byte> toy_copy() {
+    auto f = MappedFile::open(TOY_GGUF);
+    EXPECT_TRUE(f.has_value());
+    return {f->bytes().begin(), f->bytes().end()};
+}
+
+std::uint64_t hash_of(std::span<const std::byte> b) {
+    auto m = parse(b);
+    EXPECT_TRUE(m.has_value());
+    return m ? m->hash : 0;
+}
+} // namespace
+
+// Recorded from this code, not an outside tool: it catches an accidental change to what is hashed.
+TEST(Hash, ToyHashIsStable) {
+    EXPECT_EQ(hash_of(toy_copy()), 0x2a6d1ca21af41e12u);
+}
+
+TEST(Hash, ChangesWithHeaderBytes) {
+    auto                b      = toy_copy();
+    const std::uint64_t before = hash_of(b);
+    b[sizeof(Header) + 8] ^= std::byte{0x20}; // "general.architecture" -> "General.architecture"
+    EXPECT_NE(hash_of(b), before);
+}
+
+TEST(Hash, ChangesWithFileSize) {
+    auto                b      = toy_copy();
+    const std::uint64_t before = hash_of(b);
+    b.resize(b.size() + 32); // same header, the data just grows
+    EXPECT_NE(hash_of(b), before);
+}
+
+// By design the weights are not hashed: only the header and the size.
+TEST(Hash, IgnoresTensorData) {
+    auto                b      = toy_copy();
+    const std::uint64_t before = hash_of(b);
+    b[0x140] ^= std::byte{0xFF}; // first byte of tensor "a"
+    EXPECT_EQ(hash_of(b), before);
 }

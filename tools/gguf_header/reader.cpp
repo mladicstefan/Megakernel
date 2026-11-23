@@ -3,15 +3,19 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <span>
 #include <string_view>
+#include <variant>
 
 #include <fcntl.h>
 #include <unistd.h>
+#include <xxhash.h>
 // GGUF stores values little-endian; reader reads them in place without byte-swapping.
 static_assert(std::endian::native == std::endian::little);
 
@@ -165,6 +169,145 @@ std::expected<MetaValue, Error> read_value(Cursor& c, ValueType type) {
     }
     return std::unexpected(Error{ErrorKind::UnknownValueType, c.pos}); // unreachable once validated
 }
+
+// From gguf-py's GGML_QUANT_SIZES. Ids that are not listed, including the gaps, give nullopt.
+std::optional<BlockLayout> block_layout(TensorType t) {
+    switch (t) {
+    case TensorType::F32:
+        return BlockLayout{1, 4};
+    case TensorType::F16:
+        return BlockLayout{1, 2};
+    case TensorType::Q4_0:
+        return BlockLayout{32, 18};
+    case TensorType::Q4_1:
+        return BlockLayout{32, 20};
+    case TensorType::Q5_0:
+        return BlockLayout{32, 22};
+    case TensorType::Q5_1:
+        return BlockLayout{32, 24};
+    case TensorType::Q8_0:
+        return BlockLayout{32, 34};
+    case TensorType::Q8_1:
+        return BlockLayout{32, 40};
+    case TensorType::Q2_K:
+        return BlockLayout{256, 84};
+    case TensorType::Q3_K:
+        return BlockLayout{256, 110};
+    case TensorType::Q4_K:
+        return BlockLayout{256, 144};
+    case TensorType::Q5_K:
+        return BlockLayout{256, 176};
+    case TensorType::Q6_K:
+        return BlockLayout{256, 210};
+    case TensorType::Q8_K:
+        return BlockLayout{256, 292};
+    case TensorType::IQ2_XXS:
+        return BlockLayout{256, 66};
+    case TensorType::IQ2_XS:
+        return BlockLayout{256, 74};
+    case TensorType::IQ3_XXS:
+        return BlockLayout{256, 98};
+    case TensorType::IQ1_S:
+        return BlockLayout{256, 50};
+    case TensorType::IQ4_NL:
+        return BlockLayout{32, 18};
+    case TensorType::IQ3_S:
+        return BlockLayout{256, 110};
+    case TensorType::IQ2_S:
+        return BlockLayout{256, 82};
+    case TensorType::IQ4_XS:
+        return BlockLayout{256, 136};
+    case TensorType::I8:
+        return BlockLayout{1, 1};
+    case TensorType::I16:
+        return BlockLayout{1, 2};
+    case TensorType::I32:
+        return BlockLayout{1, 4};
+    case TensorType::I64:
+        return BlockLayout{1, 8};
+    case TensorType::F64:
+        return BlockLayout{1, 8};
+    case TensorType::IQ1_M:
+        return BlockLayout{256, 56};
+    case TensorType::BF16:
+        return BlockLayout{1, 2};
+    case TensorType::TQ1_0:
+        return BlockLayout{256, 54};
+    case TensorType::TQ2_0:
+        return BlockLayout{256, 66};
+    case TensorType::MXFP4:
+        return BlockLayout{32, 17};
+    case TensorType::NVFP4:
+        return BlockLayout{64, 36};
+    case TensorType::Q1_0:
+        return BlockLayout{128, 18};
+    }
+    return std::nullopt;
+}
+
+std::expected<TensorInfo, Error> read_tensor_info(Cursor& c) {
+    const std::size_t start = c.pos;
+    TensorInfo        t{};
+    t.dims.fill(1); // unused dims are 1, as in ggml
+
+    auto name = c.read_string();
+    if (!name) {
+        return std::unexpected(name.error());
+    }
+    t.name = *name;
+
+    const std::size_t n_dims_at = c.pos;
+
+    auto n_dims = c.read<std::uint32_t>();
+    if (!n_dims) {
+        return std::unexpected(n_dims.error());
+    }
+    if (*n_dims > kMaxDims) {
+        return std::unexpected(Error{ErrorKind::TooManyDims, n_dims_at});
+    }
+    t.n_dims = *n_dims;
+    for (std::uint32_t d = 0; d < t.n_dims; ++d) {
+        auto dim = c.read<std::uint64_t>();
+        if (!dim) {
+            return std::unexpected(dim.error());
+        }
+        t.dims[d] = *dim;
+    }
+
+    // The enum has a fixed underlying type, so any u32 casts safely; block_layout is the check.
+    const std::size_t type_at = c.pos;
+    auto              type    = c.read<std::uint32_t>();
+    if (!type) {
+        return std::unexpected(type.error());
+    }
+    t.dtype           = static_cast<TensorType>(*type);
+    const auto layout = block_layout(t.dtype);
+    if (!layout) {
+        return std::unexpected(Error{ErrorKind::UnknownTensorType, type_at});
+    }
+
+    auto offset = c.read<std::uint64_t>();
+    if (!offset) {
+        return std::unexpected(offset.error());
+    }
+    t.offset = *offset;
+
+    // Blocks run along the first dim, so each row must hold whole blocks.
+    if (t.dims[0] % layout->elements != 0) {
+        return std::unexpected(Error{ErrorKind::BadShape, start});
+    }
+    t.element_count = 1;
+    for (const std::uint64_t d : t.dims) {
+        if (__builtin_mul_overflow(t.element_count, d, &t.element_count)) {
+            return std::unexpected(Error{ErrorKind::SizeOverflow, start});
+        }
+    }
+    const std::uint64_t blocks = t.element_count / layout->elements;
+    if (__builtin_mul_overflow(blocks, std::uint64_t{layout->bytes}, &t.byte_size)) {
+        return std::unexpected(Error{ErrorKind::SizeOverflow, start});
+    }
+    return t;
+}
 } // namespace
 
 std::expected<Model, Error> parse(std::span<const std::byte> file) {
@@ -182,7 +325,8 @@ std::expected<Model, Error> parse(std::span<const std::byte> file) {
     if (header->version != kVersion) {
         return std::unexpected(Error{ErrorKind::UnsupportedVersion, offsetof(Header, version)});
     }
-    model.header = *header;
+    model.header    = *header;
+    model.alignment = kDefaultAlignment;
 
     // No reserve(kv_count): the count is untrusted, and each pair consumes bytes, so the loop
     // stops at Truncated.
@@ -195,12 +339,54 @@ std::expected<Model, Error> parse(std::span<const std::byte> file) {
         if (!type) {
             return std::unexpected(type.error());
         }
-        auto val = read_value(c, *type);
+        const std::size_t value_at = c.pos;
+        auto              val      = read_value(c, *type);
         if (!val) {
             return std::unexpected(val.error());
         }
+        if (*key == "general.alignment") {
+            // The spec says u32; any unsigned width is accepted. has_single_bit(0) is false.
+            const auto* a = std::get_if<std::uint64_t>(&*val);
+            if (!a || !std::has_single_bit(*a)) {
+                return std::unexpected(Error{ErrorKind::BadAlignment, value_at});
+            }
+            model.alignment = *a;
+        }
         model.metadata.push_back(KeyValue{*key, *type, *val});
     }
+
+    // Same as kv_count: no reserve, each info consumes bytes.
+    for (std::uint64_t i = 0; i < model.header.tensor_count; ++i) {
+        auto info = read_tensor_info(c);
+        if (!info) {
+            return std::unexpected(info.error());
+        }
+        model.tensors.push_back(*info);
+    }
+
+    // No overflow: pos < 2^63 (file sizes are off_t) and alignment <= 2^63.
+    model.data_start = (c.pos + model.alignment - 1) & ~(model.alignment - 1);
+
+    // Subtraction only, as in the Cursor. data_start may pass the end only if there are no
+    // tensors. The error points at data_start: Error has no room to say which tensor.
+    for (const auto& t : model.tensors) {
+        if (model.data_start
+            > model.file_size
+            || t.offset
+            > model.file_size
+            - model.data_start
+            || t.byte_size
+            > model.file_size
+            - model.data_start
+            - t.offset) {
+            return std::unexpected(Error{ErrorKind::BadTensorExtent, model.data_start});
+        }
+    }
+
+    // The seed mixes in file_size, so one call covers [0, data_start) and the size.
+    // With no tensors data_start can pass the end, so stop at the end of the file.
+    const std::size_t hashed = std::min(model.data_start, model.file_size);
+    model.hash               = XXH3_64bits_withSeed(file.data(), hashed, model.file_size);
 
     return model;
 }
