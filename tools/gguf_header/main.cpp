@@ -29,6 +29,8 @@ std::string_view name(gguf::ErrorKind kind) {
     case BadAlignment:       return "bad general.alignment";
     case BadTensorExtent:    return "tensor data runs past the end of the file";
     case SizeOverflow:       return "tensor size overflows u64";
+    case DuplicateKey:       return "duplicate metadata key";
+    case DuplicateTensor:    return "duplicate tensor name";
     }
     return "unknown error";
 }

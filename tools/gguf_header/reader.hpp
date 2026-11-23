@@ -91,6 +91,8 @@ enum class ErrorKind {
     BadAlignment,    // general.alignment is not an unsigned power of two
     BadTensorExtent, // offset + byte_size runs past the end of the file
     SizeOverflow,    // element count or byte size does not fit in u64
+    DuplicateKey,    // two metadata pairs share a key; pos is one of the two keys
+    DuplicateTensor, // two tensors share a name; pos is one of the two names
 };
 
 struct Error {

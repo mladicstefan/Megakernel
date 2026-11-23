@@ -9,9 +9,11 @@
 #include <cstdint>
 #include <expected>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string_view>
 #include <variant>
+#include <vector>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -308,6 +310,23 @@ std::expected<TensorInfo, Error> read_tensor_info(Cursor& c) {
     }
     return t;
 }
+
+// Sorts a copy and compares neighbours. Returns one name of an equal pair, still a view into
+// the file, or nullopt when all names differ.
+std::optional<std::string_view> find_duplicate(std::vector<std::string_view> names) {
+    std::ranges::sort(names);
+    const auto it = std::ranges::adjacent_find(names);
+    if (it == names.end()) {
+        return std::nullopt;
+    }
+    return *it;
+}
+
+// Where the string s (a view into file made by read_string) starts, counting its u64 length.
+std::size_t string_pos(std::span<const std::byte> file, std::string_view s) {
+    return static_cast<std::size_t>(reinterpret_cast<const std::byte*>(s.data()) - file.data())
+           - sizeof(std::uint64_t);
+}
 } // namespace
 
 std::expected<Model, Error> parse(std::span<const std::byte> file) {
@@ -354,6 +373,10 @@ std::expected<Model, Error> parse(std::span<const std::byte> file) {
         }
         model.metadata.push_back(KeyValue{*key, *type, *val});
     }
+    if (const auto dup = find_duplicate(
+            std::ranges::to<std::vector>(model.metadata | std::views::transform(&KeyValue::key)))) {
+        return std::unexpected(Error{ErrorKind::DuplicateKey, string_pos(file, *dup)});
+    }
 
     // Same as kv_count: no reserve, each info consumes bytes.
     for (std::uint64_t i = 0; i < model.header.tensor_count; ++i) {
@@ -362,6 +385,10 @@ std::expected<Model, Error> parse(std::span<const std::byte> file) {
             return std::unexpected(info.error());
         }
         model.tensors.push_back(*info);
+    }
+    if (const auto dup = find_duplicate(
+            std::ranges::to<std::vector>(model.tensors | std::views::transform(&TensorInfo::name)))) {
+        return std::unexpected(Error{ErrorKind::DuplicateTensor, string_pos(file, *dup)});
     }
 
     // No overflow: pos < 2^63 (file sizes are off_t) and alignment <= 2^63.

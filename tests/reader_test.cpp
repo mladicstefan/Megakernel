@@ -545,6 +545,47 @@ TEST(Parse, RejectsTensorPastEnd) {
     }
 }
 
+// The file ends right after the tensor infos, before the padding: data_start (64) is past the
+// end (57). Without its own check, file_size - data_start would wrap and accept the tensor.
+TEST(Parse, RejectsTensorWhenDataStartIsPastEnd) {
+    auto b = tensor_file({4}, id(TensorType::F32), 0, 0);
+    b.resize(kNDimsAt + 4 + 8 + 4 + 8); // n_dims, one dim, type, offset
+    auto m = parse(b);
+    ASSERT_FALSE(m.has_value());
+    EXPECT_EQ(m.error().kind, ErrorKind::BadTensorExtent);
+}
+
+TEST(Parse, RejectsDuplicateKey) {
+    auto b = kv_file(2, id(ValueType::Uint8));
+    put<std::uint8_t>(b, 1);
+    const std::size_t second = b.size();
+    put_string(b, "k");
+    put(b, id(ValueType::Uint8));
+    put<std::uint8_t>(b, 2);
+    auto m = parse(b);
+    ASSERT_FALSE(m.has_value());
+    EXPECT_EQ(m.error().kind, ErrorKind::DuplicateKey);
+    EXPECT_TRUE(m.error().pos == sizeof(Header) || m.error().pos == second) << m.error().pos;
+}
+
+TEST(Parse, RejectsDuplicateTensorName) {
+    std::vector<std::byte> b;
+    put(b, Header{kMagic, kVersion, 2, 0});
+    const std::size_t second = sizeof(Header) + 33; // one info: name 9, n_dims 4, dim 8, type 4, offset 8
+    for (int i = 0; i < 2; ++i) {
+        put_string(b, "t");
+        put<std::uint32_t>(b, 1);
+        put<std::uint64_t>(b, 4);
+        put(b, id(TensorType::F32));
+        put<std::uint64_t>(b, 0);
+    }
+    b.resize((b.size() + 31) / 32 * 32 + 16);
+    auto m = parse(b);
+    ASSERT_FALSE(m.has_value());
+    EXPECT_EQ(m.error().kind, ErrorKind::DuplicateTensor);
+    EXPECT_TRUE(m.error().pos == sizeof(Header) || m.error().pos == second) << m.error().pos;
+}
+
 TEST(Parse, UsesGeneralAlignment) {
     auto b = alignment_file(id(ValueType::Uint32));
     put<std::uint32_t>(b, 64);
