@@ -83,6 +83,8 @@ enum class ErrorKind {
     BadMagic,
     UnsupportedVersion,
     UnknownValueType,
+    BadBool,         // a bool byte other than 0 or 1
+    NestedArray,     // array of arrays: rejected, no model file uses them
     UnknownTensorType,
     TooManyDims,
     BadAlignment,    // general.alignment is zero or not a power of two
@@ -101,6 +103,9 @@ struct Header {
     std::uint64_t tensor_count;
     std::uint64_t kv_count;
 };
+
+// parse() reads the header in one read<Header>(), so it must match the file byte for byte.
+static_assert(sizeof(Header) == 24);
 
 struct ArrayRef {
     ValueType     element_type;
@@ -185,4 +190,7 @@ struct MappedFile {
         return {map.get(), map.get_deleter().size};
     }
 };
+
+// The returned Model points into file, so file must outlive it.
+std::expected<Model, Error> parse(std::span<const std::byte> file);
 } // namespace gguf

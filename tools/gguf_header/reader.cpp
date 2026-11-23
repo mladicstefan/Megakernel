@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <span>
 #include <string_view>
 
 #include <fcntl.h>
@@ -64,5 +65,143 @@ std::expected<MappedFile, Error> MappedFile::open(const char* path) {
 
 void Unmap::operator()(std::byte* p) const noexcept {
     munmap(p, size);
+}
+
+namespace {
+// Casting validates nothing, so check the id first. Value type ids run 0 to Float64 with no gaps.
+std::expected<ValueType, Error> read_value_type(Cursor& c) {
+    const std::size_t at = c.pos;
+    auto              id = c.read<std::uint32_t>();
+    if (!id) {
+        return std::unexpected(id.error());
+    }
+    if (*id > static_cast<std::uint32_t>(ValueType::Float64)) {
+        return std::unexpected(Error{ErrorKind::UnknownValueType, at});
+    }
+    return static_cast<ValueType>(*id);
+}
+
+// Reads a T from the file and stores it widened to the MetaValue alternative Wide.
+template <class T, class Wide>
+std::expected<MetaValue, Error> read_widened(Cursor& c) {
+    auto v = c.read<T>();
+    if (!v) {
+        return std::unexpected(v.error());
+    }
+    return MetaValue{static_cast<Wide>(*v)};
+}
+
+std::expected<MetaValue, Error> read_value(Cursor& c, ValueType type);
+
+// Records where the elements are, then walks them to find where the array ends.
+std::expected<MetaValue, Error> read_array(Cursor& c) {
+    const std::size_t type_at = c.pos;
+    auto              elem    = read_value_type(c);
+    if (!elem) {
+        return std::unexpected(elem.error());
+    }
+    if (*elem == ValueType::Array) {
+        return std::unexpected(Error{ErrorKind::NestedArray, type_at});
+    }
+    auto count = c.read<std::uint64_t>();
+    if (!count) {
+        return std::unexpected(count.error());
+    }
+
+    const ArrayRef ref{*elem, *count, c.pos};
+    // Every element takes at least one byte, so a bogus count hits Truncated, not a long loop.
+    for (std::uint64_t i = 0; i < *count; ++i) {
+        auto v = read_value(c, *elem);
+        if (!v) {
+            return std::unexpected(v.error());
+        }
+    }
+    return MetaValue{ref};
+}
+
+std::expected<MetaValue, Error> read_value(Cursor& c, ValueType type) {
+    switch (type) {
+    case ValueType::Uint8:
+        return read_widened<std::uint8_t, std::uint64_t>(c);
+    case ValueType::Uint16:
+        return read_widened<std::uint16_t, std::uint64_t>(c);
+    case ValueType::Uint32:
+        return read_widened<std::uint32_t, std::uint64_t>(c);
+    case ValueType::Uint64:
+        return read_widened<std::uint64_t, std::uint64_t>(c);
+    case ValueType::Int8:
+        return read_widened<std::int8_t, std::int64_t>(c);
+    case ValueType::Int16:
+        return read_widened<std::int16_t, std::int64_t>(c);
+    case ValueType::Int32:
+        return read_widened<std::int32_t, std::int64_t>(c);
+    case ValueType::Int64:
+        return read_widened<std::int64_t, std::int64_t>(c);
+    case ValueType::Float32:
+        return read_widened<float, double>(c);
+    case ValueType::Float64:
+        return read_widened<double, double>(c);
+    case ValueType::Bool: {
+        // Read a byte, not a bool: a bool holding anything but 0 or 1 is undefined behaviour.
+        const std::size_t at = c.pos;
+        auto              b  = c.read<std::uint8_t>();
+        if (!b) {
+            return std::unexpected(b.error());
+        }
+        if (*b > 1) {
+            return std::unexpected(Error{ErrorKind::BadBool, at});
+        }
+        return MetaValue{*b == 1};
+    }
+    case ValueType::String: {
+        auto s = c.read_string();
+        if (!s) {
+            return std::unexpected(s.error());
+        }
+        return MetaValue{*s};
+    }
+    case ValueType::Array:
+        return read_array(c);
+    }
+    return std::unexpected(Error{ErrorKind::UnknownValueType, c.pos}); // unreachable once validated
+}
+} // namespace
+
+std::expected<Model, Error> parse(std::span<const std::byte> file) {
+    Cursor c{file};
+    Model  model{};
+    model.file_size = file.size();
+
+    auto header = c.read<Header>();
+    if (!header) {
+        return std::unexpected(header.error());
+    }
+    if (header->magic != kMagic) {
+        return std::unexpected(Error{ErrorKind::BadMagic, offsetof(Header, magic)});
+    }
+    if (header->version != kVersion) {
+        return std::unexpected(Error{ErrorKind::UnsupportedVersion, offsetof(Header, version)});
+    }
+    model.header = *header;
+
+    // No reserve(kv_count): the count is untrusted, and each pair consumes bytes, so the loop
+    // stops at Truncated.
+    for (std::uint64_t i = 0; i < model.header.kv_count; ++i) {
+        auto key = c.read_string();
+        if (!key) {
+            return std::unexpected(key.error());
+        }
+        auto type = read_value_type(c);
+        if (!type) {
+            return std::unexpected(type.error());
+        }
+        auto val = read_value(c, *type);
+        if (!val) {
+            return std::unexpected(val.error());
+        }
+        model.metadata.push_back(KeyValue{*key, *type, *val});
+    }
+
+    return model;
 }
 } // namespace gguf
