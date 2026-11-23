@@ -74,6 +74,8 @@ target_link_libraries(gguf2hpp PRIVATE gguf_header project_warnings)
 # --- engine ---
 add_executable(engine src/main.cpp)
 target_link_libraries(engine PRIVATE project_warnings)
+# Generated headers include model_types.hpp from here.
+target_include_directories(engine PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
 set(MODEL_GGUF "" CACHE FILEPATH "GGUF to compile the engine for")
 if(MODEL_GGUF)
@@ -108,19 +110,20 @@ gtest_discover_tests(smoke_test)
 
 set(TOY_GGUF ${CMAKE_SOURCE_DIR}/tests/data/toy.gguf)
 
-add_executable(reader_test tests/reader_test.cpp)
+add_executable(reader_test tests/reader_test.cpp tests/emitter_test.cpp)
 target_link_libraries(reader_test PRIVATE gguf_header GTest::gtest_main project_warnings)
 target_compile_definitions(reader_test PRIVATE
   TOY_GGUF="${TOY_GGUF}"
   QWEN_GGUF="${CMAKE_SOURCE_DIR}/models/Qwen_Qwen3-0.6B-bf16.gguf")
 gtest_discover_tests(reader_test)
 
-# Enable at milestone 6, once the emitter works:
-# add_custom_command(
-#   OUTPUT  ${GEN_DIR}/toy.hpp
-#   COMMAND ${CMAKE_COMMAND} -E make_directory ${GEN_DIR}
-#   COMMAND gguf2hpp ${TOY_GGUF} ${GEN_DIR}/toy.hpp
-#   DEPENDS gguf2hpp ${TOY_GGUF}
-# )
-# target_sources(reader_test PRIVATE ${GEN_DIR}/toy.hpp)
-# target_include_directories(reader_test PRIVATE ${GEN_DIR})
+# Milestone 7: emitter_test includes the header gguf2hpp generates from toy.gguf.
+add_custom_command(
+  OUTPUT  ${GEN_DIR}/toy.hpp
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${GEN_DIR}
+  COMMAND gguf2hpp ${TOY_GGUF} ${GEN_DIR}/toy.hpp
+  DEPENDS gguf2hpp ${TOY_GGUF}
+)
+target_sources(reader_test PRIVATE ${GEN_DIR}/toy.hpp)
+# src: the generated header includes model_types.hpp from there.
+target_include_directories(reader_test PRIVATE ${GEN_DIR} ${CMAKE_SOURCE_DIR}/src)

@@ -2,11 +2,9 @@
 #include "reader.hpp"
 
 #include <bit>
-#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <print>
-#include <string>
 #include <string_view>
 #include <system_error>
 
@@ -16,21 +14,36 @@ namespace {
 std::string_view name(gguf::ErrorKind kind) {
     using enum gguf::ErrorKind;
     switch (kind) {
-    case OpenFailed:         return "cannot open (missing, not a regular file, or mmap failed)";
-    case Truncated:          return "truncated";
-    case BadMagic:           return "not a GGUF file (bad magic)";
-    case UnsupportedVersion: return "unsupported GGUF version";
-    case UnknownValueType:   return "unknown metadata value type";
-    case BadBool:            return "bool other than 0 or 1";
-    case NestedArray:        return "nested array";
-    case UnknownTensorType:  return "unknown tensor type";
-    case TooManyDims:        return "more than 4 dims";
-    case BadShape:           return "first dim not a whole number of blocks";
-    case BadAlignment:       return "bad general.alignment";
-    case BadTensorExtent:    return "tensor data runs past the end of the file";
-    case SizeOverflow:       return "tensor size overflows u64";
-    case DuplicateKey:       return "duplicate metadata key";
-    case DuplicateTensor:    return "duplicate tensor name";
+    case OpenFailed:
+        return "cannot open (missing, not a regular file, or mmap failed)";
+    case Truncated:
+        return "truncated";
+    case BadMagic:
+        return "not a GGUF file (bad magic)";
+    case UnsupportedVersion:
+        return "unsupported GGUF version";
+    case UnknownValueType:
+        return "unknown metadata value type";
+    case BadBool:
+        return "bool other than 0 or 1";
+    case NestedArray:
+        return "nested array";
+    case UnknownTensorType:
+        return "unknown tensor type";
+    case TooManyDims:
+        return "more than 4 dims";
+    case BadShape:
+        return "first dim not a whole number of blocks";
+    case BadAlignment:
+        return "bad general.alignment";
+    case BadTensorExtent:
+        return "tensor data runs past the end of the file";
+    case SizeOverflow:
+        return "tensor size overflows u64";
+    case DuplicateKey:
+        return "duplicate metadata key";
+    case DuplicateTensor:
+        return "duplicate tensor name";
     }
     return "unknown error";
 }
@@ -60,14 +73,19 @@ int main(int argc, char** argv) {
         report(in, model.error());
         return 1;
     }
-    const std::string text = gguf::emit(*model);
+    // The file name only: the output must not change with the directory the model sits in.
+    const auto text = gguf::emit(*model, std::filesystem::path(in).filename().string());
+    if (!text) {
+        std::println(stderr, "gguf2hpp: {}: {}", in, text.error());
+        return 1;
+    }
 
     // Write a temp file, then rename over out: a failed run never leaves a half-written
     // header that make would take as up to date.
     std::filesystem::path tmp = out;
     tmp += ".tmp";
     std::ofstream f(tmp, std::ios::binary);
-    f << text;
+    f << *text;
     f.close();
     if (!f) {
         std::println(stderr, "gguf2hpp: cannot write {}", tmp.string());
@@ -76,7 +94,10 @@ int main(int argc, char** argv) {
     std::error_code ec;
     std::filesystem::rename(tmp, out, ec);
     if (ec) {
-        std::println(stderr, "gguf2hpp: cannot rename {} to {}: {}", tmp.string(), out.string(),
+        std::println(stderr,
+                     "gguf2hpp: cannot rename {} to {}: {}",
+                     tmp.string(),
+                     out.string(),
                      ec.message());
         return 1;
     }

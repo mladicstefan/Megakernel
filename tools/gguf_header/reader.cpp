@@ -386,8 +386,8 @@ std::expected<Model, Error> parse(std::span<const std::byte> file) {
         }
         model.tensors.push_back(*info);
     }
-    if (const auto dup = find_duplicate(
-            std::ranges::to<std::vector>(model.tensors | std::views::transform(&TensorInfo::name)))) {
+    if (const auto dup = find_duplicate(std::ranges::to<std::vector>(
+            model.tensors | std::views::transform(&TensorInfo::name)))) {
         return std::unexpected(Error{ErrorKind::DuplicateTensor, string_pos(file, *dup)});
     }
 
