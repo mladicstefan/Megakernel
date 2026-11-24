@@ -11,6 +11,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <initializer_list>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -60,6 +62,26 @@ static_assert(mk::find(model::tensors, "b").offset == 32u);
 // "call to non-'constexpr' function 'void mk::tensor_name_not_found()'":
 // static_assert(mk::find(model::tensors, "nope").offset == 0u);
 
+// The real model, when it was there at configure time (see CMakeLists.txt): toy.gguf has no
+// layers. Wrapped in a namespace because its model:: would collide with toy's; that works only
+// while every header it includes was already included above.
+#if __has_include("qwen.hpp")
+namespace qwen {
+#include "qwen.hpp"
+} // namespace qwen
+
+static_assert(std::size(qwen::model::layers) == qwen::model::meta::arch::block_count);
+// Numeric order: in the file, and so in tensors, "blk.10" comes before "blk.2".
+static_assert(qwen::model::layers[2].q.name == "blk.2.attn_q.weight");
+static_assert(qwen::model::layers[10].q.name == "blk.10.attn_q.weight");
+static_assert(qwen::model::layers[27].down.name == "blk.27.ffn_down.weight");
+static_assert(qwen::model::layers[5].o.name == "blk.5.attn_output.weight");
+static_assert(qwen::model::layers[5].attn_norm.name == "blk.5.attn_norm.weight");
+static_assert(qwen::model::layers[0].q.dims[0] == qwen::model::meta::arch::embedding_length);
+static_assert(qwen::model::layers[0].q.offset
+              == mk::find(qwen::model::tensors, "blk.0.attn_q.weight").offset);
+#endif
+
 // Generated strings end in sv so that they keep the bytes after a NUL.
 static_assert("a\000b"sv.size() == 3 && std::string_view{"a\000b"}.size() == 1);
 
@@ -93,6 +115,14 @@ Model with_key(std::string_view key, ValueType type, MetaValue val) {
 Model with_tensor(std::string_view name, TensorType dtype = TensorType::F32) {
     Model m{};
     m.tensors.push_back({name, 1, {4, 1, 1, 1}, dtype, 0, 4, 16});
+    return m;
+}
+
+Model with_tensors(std::initializer_list<std::string_view> names) {
+    Model m{};
+    for (const std::string_view name : names) {
+        m.tensors.push_back({name, 1, {4, 1, 1, 1}, TensorType::F32, 0, 4, 16});
+    }
     return m;
 }
 
@@ -301,13 +331,119 @@ TEST(Emit, RejectsValueThatDoesNotMatchItsType) {
 // The reader never widens a value past its own type; written as is, these would compile to
 // another number (300 as a uint8_t is 44) or to no number at all ("inff").
 TEST(Emit, RejectsValueThatDoesNotFitItsType) {
-    EXPECT_TRUE(error_of(with_key("a.x", ValueType::Uint8, std::uint64_t{256})).contains("\"a.x\""));
+    EXPECT_TRUE(
+        error_of(with_key("a.x", ValueType::Uint8, std::uint64_t{256})).contains("\"a.x\""));
     EXPECT_TRUE(error_of(with_key("a.x", ValueType::Int8, std::int64_t{-129})).contains("\"a.x\""));
-    EXPECT_TRUE(error_of(with_key("a.x", ValueType::Int16, std::int64_t{32768})).contains("\"a.x\""));
+    EXPECT_TRUE(
+        error_of(with_key("a.x", ValueType::Int16, std::int64_t{32768})).contains("\"a.x\""));
     EXPECT_TRUE(
         error_of(with_key("a.x", ValueType::Uint32, std::uint64_t{1} << 32)).contains("\"a.x\""));
     EXPECT_TRUE(error_of(with_key("a.x", ValueType::Float32, 1e300)).contains("\"a.x\""));
     EXPECT_TRUE(error_of(with_key("a.x", ValueType::Float32, -1e300)).contains("\"a.x\""));
+}
+
+// The tensors come in file order, which is text order: blk.10 sits between blk.1 and blk.2.
+TEST(Emit, LayersAreInNumericOrder) {
+    const std::string text = emitted(with_tensors({"token_embd.weight",
+                                                   "blk.0.attn_q.weight",
+                                                   "blk.1.attn_q.weight",
+                                                   "blk.10.attn_q.weight",
+                                                   "blk.2.attn_q.weight",
+                                                   "blk.3.attn_q.weight",
+                                                   "blk.4.attn_q.weight",
+                                                   "blk.5.attn_q.weight",
+                                                   "blk.6.attn_q.weight",
+                                                   "blk.7.attn_q.weight",
+                                                   "blk.8.attn_q.weight",
+                                                   "blk.9.attn_q.weight"}));
+    EXPECT_TRUE(text.ends_with(R"(}};
+
+struct Layer { mk::Tensor q; };
+
+// Device code cannot read layers[i] directly, only through a constexpr local:
+//     constexpr Layer L = layers[3];
+// For a layer index known only at run time, copy the table into a static
+// constexpr local. Without static, every thread rebuilds the copy on its stack
+// at each launch.
+inline constexpr Layer layers[11] = {
+    {tensors[1]},
+    {tensors[2]},
+    {tensors[4]},
+    {tensors[5]},
+    {tensors[6]},
+    {tensors[7]},
+    {tensors[8]},
+    {tensors[9]},
+    {tensors[10]},
+    {tensors[11]},
+    {tensors[3]},
+};
+} // namespace model
+)")) << text;
+}
+
+// Fields come in the order the file first names them. Listed names get the short form; the
+// rest keep the GGUF name, minus ".weight", with dots as underscores.
+TEST(Emit, LayerFieldsAreNamedAfterTheTensors) {
+    const std::string text = emitted(with_tensors({"blk.1.ffn_up.weight",
+                                                   "blk.1.attn_norm.weight",
+                                                   "blk.1.attn_output.weight",
+                                                   "blk.1.attn_q.bias",
+                                                   "blk.0.attn_q.bias",
+                                                   "blk.0.attn_output.weight",
+                                                   "blk.0.attn_norm.weight",
+                                                   "blk.0.ffn_up.weight"}));
+    EXPECT_TRUE(text.contains("struct Layer { mk::Tensor up, attn_norm, o, attn_q_bias; };\n"));
+    EXPECT_TRUE(text.contains("inline constexpr Layer layers[2] = {\n"
+                              "    {tensors[7], tensors[6], tensors[5], tensors[4]},\n"
+                              "    {tensors[0], tensors[1], tensors[2], tensors[3]},\n"
+                              "};\n"))
+        << text;
+}
+
+TEST(Emit, NoBlockTensorsNoLayers) {
+    for (const std::string_view name : {"output.weight", "blk.x.w", "blk.3", "blk..w", "blk"}) {
+        EXPECT_FALSE(emitted(with_tensors({name})).contains("Layer")) << name;
+    }
+}
+
+// The point of the table: a hole fails the generator, with the name of the tensor it wants.
+TEST(Emit, RejectsMissingLayerTensor) {
+    // One tensor of one layer.
+    EXPECT_TRUE(error_of(with_tensors(
+                             {"blk.0.attn_q.weight", "blk.0.attn_k.weight", "blk.1.attn_q.weight"}))
+                    .contains("\"blk.1.attn_k.weight\""));
+    EXPECT_TRUE(error_of(with_tensors(
+                             {"blk.0.attn_q.weight", "blk.1.attn_q.weight", "blk.1.attn_k.weight"}))
+                    .contains("\"blk.0.attn_k.weight\""));
+    // A whole layer. The second index must not make the tool count that far.
+    EXPECT_TRUE(error_of(with_tensors({"blk.0.w", "blk.2.w"})).contains("\"blk.1.w\""));
+    EXPECT_TRUE(
+        error_of(with_tensors({"blk.0.w", "blk.18446744073709551615.w"})).contains("\"blk.1.w\""));
+    EXPECT_TRUE(error_of(with_tensors({"blk.1.w"})).contains("\"blk.0.w\""));
+}
+
+TEST(Emit, RejectsTwoTensorsForOneLayerField) {
+    const std::string e = error_of(with_tensors({"blk.0.a.weight", "blk.0.a"}));
+    EXPECT_TRUE(e.contains("\"blk.0.a")) << e;
+}
+
+TEST(Emit, RejectsLayerFieldThatIsNotAnIdentifier) {
+    for (const std::string_view name : {"blk.0.a-b.weight", "blk.0.1x", "blk.3."}) {
+        const std::string e = error_of(with_tensors({name}));
+        EXPECT_TRUE(e.contains(std::format("\"{}\"", name))) << e;
+    }
+}
+
+// A layer missing from the end leaves no hole; only the file's own count shows it.
+TEST(Emit, RejectsLayerCountThatDisagreesWithBlockCount) {
+    Model m = with_tensors({"blk.0.w", "blk.1.w"});
+    m.metadata.push_back({"general.architecture", ValueType::String, "toy"sv});
+    m.metadata.push_back({"toy.block_count", ValueType::Uint32, std::uint64_t{2}});
+    EXPECT_TRUE(emitted(m).contains("layers[2]"));
+    m.metadata[1].val   = std::uint64_t{3};
+    const std::string e = error_of(m);
+    EXPECT_TRUE(e.contains("\"toy.block_count\"")) << e;
 }
 
 TEST(Emit, RejectsUnknownDtype) {

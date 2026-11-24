@@ -3,6 +3,7 @@
 #include "reader.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -12,8 +13,10 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace gguf {
 namespace {
@@ -287,6 +290,154 @@ std::expected<std::string, std::string> literal(const KeyValue& kv) {
     }
     return key_error(kv.key, "value does not match its type");
 }
+
+std::unexpected<std::string> tensor_error(std::string_view tensor, std::string_view why) {
+    return std::unexpected(std::format("tensor \"{}\": {}", escape(tensor), why));
+}
+
+// The Layer field for tensor "blk.<n>.<rest>": rest without ".weight", dots as underscores, then
+// the short name the kernels use. A name that is not listed keeps its GGUF name.
+std::string field_name(std::string_view rest) {
+    constexpr std::string_view weight = ".weight";
+    if (rest.ends_with(weight)) {
+        rest.remove_suffix(weight.size());
+    }
+    std::string name{rest};
+    std::ranges::replace(name, '.', '_');
+
+    constexpr std::pair<std::string_view, std::string_view> short_names[] = {
+        {"attn_q", "q"},
+        {"attn_k", "k"},
+        {"attn_v", "v"},
+        {"attn_output", "o"},
+        {"attn_q_norm", "q_norm"},
+        {"attn_k_norm", "k_norm"},
+        {"ffn_gate", "gate"},
+        {"ffn_up", "up"},
+        {"ffn_down", "down"},
+    };
+    for (const auto& [gguf_name, short_name] : short_names) {
+        if (name == gguf_name) {
+            return std::string{short_name};
+        }
+    }
+    return name;
+}
+
+struct LayerField {
+    std::string      name; // in struct Layer
+    std::string_view rest; // as first seen in the file, to name a tensor that is missing
+};
+
+// One tensor named "blk.<layer>.<rest>".
+struct LayerTensor {
+    std::uint64_t layer;
+    std::size_t   field;   // index into the fields
+    std::size_t   tensor;  // index into m.tensors
+};
+
+// struct Layer and the layers table, or "" for a model with no "blk.<n>." tensors. The table
+// is in numeric order; the tensor list is in file order, where "blk.10" comes before "blk.2".
+// Every layer must have every field, so a tensor that is missing fails here and not in a kernel.
+std::expected<std::string, std::string> layers(const Model& m, const std::string_view* arch) {
+    std::vector<LayerField>  fields;
+    std::vector<LayerTensor> found;
+    for (std::size_t i = 0; i < m.tensors.size(); ++i) {
+        std::string_view rest = m.tensors[i].name;
+        if (!rest.starts_with("blk.")) {
+            continue;
+        }
+        rest.remove_prefix(4);
+        // from_chars reads digits and reports where it stopped. No locale, no exceptions.
+        std::uint64_t     layer = 0;
+        const char* const last  = rest.data() + rest.size();
+        const auto [end, ec]    = std::from_chars(rest.data(), last, layer);
+        if (ec != std::errc{} || end == last || *end != '.') {
+            continue; // "blk.x.w", "blk.3": not a layer's tensor, it stays in tensors only
+        }
+        rest.remove_prefix(static_cast<std::size_t>(end - rest.data()) + 1);
+
+        std::string name = field_name(rest);
+        if (!is_identifier(name)) {
+            return tensor_error(m.tensors[i].name, "its Layer field is not a C++ identifier");
+        }
+        auto field = std::ranges::find(fields, name, &LayerField::name);
+        if (field == fields.end()) {
+            field = fields.insert(fields.end(), LayerField{std::move(name), rest});
+        }
+        found.push_back({layer, static_cast<std::size_t>(field - fields.begin()), i});
+    }
+    if (found.empty()) {
+        return std::string{};
+    }
+
+    // Sorted by layer, then field, a complete table reads (0,0) (0,1) ... with no gap and no
+    // repeat. The walk stops at the first slot that differs, so a huge index costs nothing.
+    std::ranges::sort(found, {}, [](const LayerTensor& t) { return std::pair{t.layer, t.field}; });
+    const auto missing = [&](std::size_t slot) {
+        return tensor_error(std::format("blk.{}.{}",
+                                        slot / fields.size(),
+                                        fields[slot % fields.size()].rest),
+                            "missing: every layer needs it");
+    };
+    for (std::size_t slot = 0; slot < found.size(); ++slot) {
+        const LayerTensor& t = found[slot];
+        if (t.layer == slot / fields.size() && t.field == slot % fields.size()) {
+            continue;
+        }
+        // Everything before this slot matched, so t is either the previous slot again or past
+        // this one.
+        if (slot > 0 && t.layer == found[slot - 1].layer && t.field == found[slot - 1].field) {
+            return tensor_error(m.tensors[t.tensor].name,
+                                "another tensor of this layer has the same Layer field");
+        }
+        return missing(slot);
+    }
+    if (found.size() % fields.size() != 0) {
+        return missing(found.size()); // the last layer stops short
+    }
+    const std::size_t count = found.size() / fields.size();
+
+    // The file's own layer count must agree, or a whole layer is missing from the end.
+    if (arch) {
+        const std::string key = std::format("{}.block_count", *arch);
+        const auto        kv  = std::ranges::find(m.metadata, key, &KeyValue::key);
+        if (kv != m.metadata.end()) {
+            const auto* stated = std::get_if<std::uint64_t>(&kv->val);
+            if (stated && *stated != count) {
+                return key_error(key, std::format("the tensors make {} layers", count));
+            }
+        }
+    }
+
+    // Fields are Tensors by value and the table is a plain array: device code cannot index a
+    // std::array, and cannot copy a Layer that holds references into the host's tensors.
+    std::string out = "\nstruct Layer { mk::Tensor ";
+    for (std::size_t f = 0; f < fields.size(); ++f) {
+        out += std::format("{}{}", f == 0 ? "" : ", ", fields[f].name);
+    }
+    // The caveat is written into the header: that is where a kernel author looks the table up.
+    out += std::format(
+        "; }};\n"
+        "\n"
+        "// Device code cannot read layers[i] directly, only through a constexpr local:\n"
+        "//     constexpr Layer L = layers[3];\n"
+        "// For a layer index known only at run time, copy the table into a static\n"
+        "// constexpr local. Without static, every thread rebuilds the copy on its stack\n"
+        "// at each launch.\n"
+        "inline constexpr Layer layers[{}] = {{\n",
+        count);
+    for (std::size_t slot = 0; slot < found.size(); ++slot) {
+        const bool first = slot % fields.size() == 0;
+        const bool last  = slot % fields.size() == fields.size() - 1;
+        out += std::format("{}tensors[{}]{}",
+                           first ? "    {" : ", ",
+                           found[slot].tensor,
+                           last ? "},\n" : "");
+    }
+    out += "};\n";
+    return out;
+}
 } // namespace
 
 std::expected<std::string, std::string> emit(const Model& m, std::string_view source) {
@@ -379,6 +530,12 @@ std::expected<std::string, std::string> emit(const Model& m, std::string_view so
         }
         out += "}};\n";
     }
+
+    const auto layer_table = layers(m, arch);
+    if (!layer_table) {
+        return std::unexpected(layer_table.error());
+    }
+    out += *layer_table;
     out += "} // namespace model\n";
     return out;
 }
