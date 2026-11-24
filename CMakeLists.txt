@@ -46,6 +46,10 @@ if(ENABLE_SANITIZERS)
 endif()
 
 set(GEN_DIR ${CMAKE_BINARY_DIR}/generated)
+# A generated header has no compile command, so clangd guesses one and cannot find
+# model_types.hpp. This tells it where to look when such a header is opened in an editor.
+file(WRITE ${GEN_DIR}/.clangd
+  "CompileFlags:\n  Add: [-std=c++${CMAKE_CXX_STANDARD}, -I${CMAKE_SOURCE_DIR}/src]\n")
 
 # xxHash, header-only: the repo root has no CMakeLists.txt, so this only downloads it.
 include(FetchContent)

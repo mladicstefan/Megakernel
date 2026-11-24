@@ -1,5 +1,4 @@
 #pragma once
-#include <array> // for the generated header's tensor table; it includes only this file
 #include <cstdint>
 #include <string_view>
 
