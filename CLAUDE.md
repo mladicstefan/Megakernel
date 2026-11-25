@@ -19,9 +19,10 @@ Status and next steps: `ROADMAP.md` (milestones) and `docs/PLAN.md` (engine phas
 - `src/`: the engine (`main.cpp`), `model_types.hpp` (the types generated headers use),
   `weights.{hpp,cu}` (the weights on the GPU), `megakernel.{hpp,cu}` (one kernel launch
   per decode step, qwen3 only), `forward.{hpp,cu}` (the reference forward pass it is checked
-  against), and small headers: `gpu.hpp` (the target GPU as a type), `kv_format.hpp` (KV
-  cache formats as types), `checksum.hpp`, `numeric.hpp`, `compare.hpp`,
-  `verified_file.hpp`.
+  against), `config.hpp` (the configuration types every kernel is a template over), and
+  small headers: `gpu.hpp` (GPUs as types), `kv_format.hpp` (KV cache formats as types),
+  `row_kernel.hpp` (row kernels as types), `greedy.hpp` (token IDs in, token IDs out),
+  `checksum.hpp`, `numeric.hpp`, `compare.hpp`, `verified_file.hpp`.
 - `tools/forward/`: the `forward` CLI, which decodes token IDs with the megakernel or the
   reference pass, checks the first against the second, and the second against a llama.cpp
   dump. `tools/reference/`: the llama.cpp harness that makes
@@ -62,6 +63,9 @@ cmake -S . -B build && cmake --build build -j && ctest --test-dir build
   and 120.
 - Warnings are strict (`-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion
   -Wold-style-cast` and more). Keep the build warning-free.
+- Compile time only. A choice that the model or the build fixes is a type or a constant,
+  never a run-time value or a flag. Add it to a configuration type in `src/config.hpp`,
+  give its interface a concept, and prove what can be proven with a `static_assert`.
 - Structs with public fields and member functions. No virtual, no inheritance for
   polymorphism, no exceptions (use `std::expected`), no `std::function` or `shared_ptr`.
   Templates and concepts where they earn it.
