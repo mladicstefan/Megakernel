@@ -27,7 +27,8 @@ constexpr unsigned kVocab     = n_vocab;
 static_assert(kHeadDim % 32 == 0);
 
 // Attention splits the grid by KV head: block b works for KV head b % kKvHeads, as its
-// member b / kKvHeads.
+// member b / kKvHeads. Every KV head gets the same number of members, so up to
+// kKvHeads - 1 blocks at the end of the grid sit attention out.
 template <MegakernelConfig C>
 constexpr unsigned kMembers = Grid<C>::blocks / kKvHeads;
 
@@ -37,8 +38,8 @@ constexpr bool grid_fits_model =
     // The row kernel reads whole steps of every matrix it is given.
     kEmbd % C::RowKernel::step == 0 && kFf % C::RowKernel::step == 0 &&
     kQ % C::RowKernel::step == 0 &&
-    // Each KV head gets the same number of blocks.
-    Grid<C>::blocks % kKvHeads == 0 &&
+    // Each KV head gets at least one block.
+    Grid<C>::blocks >= kKvHeads &&
     // The attention merges give one thread to each (query head of the group, dimension).
     Grid<C>::threads == kGroup * kHeadDim &&
     // A warp's first row is warp * rows / warps, in 32 bits.
@@ -449,9 +450,12 @@ struct AttentionPartPhase {
     static constexpr unsigned writes = kPartials;
     template <MegakernelConfig C>
     __device__ static void run(const Step<C>& s) {
-        attention_part<C>(blockIdx.x % kKvHeads, blockIdx.x / kKvHeads, s.in,
-                          f32_at(s.base, s.w->q_norm), f32_at(s.base, s.w->k_norm), s.k_cache,
-                          s.v_cache, s.rope, s.pos, s.partials + blockIdx.x, s.scratch);
+        if (blockIdx.x / kKvHeads < kMembers<C>) {
+            attention_part<C>(blockIdx.x % kKvHeads, blockIdx.x / kKvHeads, s.in,
+                              f32_at(s.base, s.w->q_norm), f32_at(s.base, s.w->k_norm),
+                              s.k_cache, s.v_cache, s.rope, s.pos, s.partials + blockIdx.x,
+                              s.scratch);
+        }
     }
 };
 
