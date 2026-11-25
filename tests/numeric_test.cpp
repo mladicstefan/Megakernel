@@ -49,3 +49,9 @@ TEST(Bf16, NanStaysNan) {
     EXPECT_TRUE(std::isnan(mk::round_to_bf16(std::numeric_limits<float>::quiet_NaN())));
     EXPECT_TRUE(std::isnan(mk::round_to_bf16(from_bits(0x7f800001)))); // a signalling NaN
 }
+
+TEST(Bf16, BitsAreTheTopHalfOfTheRoundedFloat) {
+    EXPECT_EQ(mk::float_to_bf16(1.0f), 0x3f80);
+    EXPECT_EQ(mk::float_to_bf16(from_bits(0x3f808001)), 0x3f81);
+    EXPECT_EQ(mk::bf16_to_float(mk::float_to_bf16(-2.0f)), -2.0f);
+}

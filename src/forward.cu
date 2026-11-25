@@ -9,8 +9,6 @@
 #include <cstdint>
 #include <vector>
 
-#include <cuda_fp16.h>
-
 namespace mk {
 namespace {
 constexpr unsigned kThreads = 256;
@@ -35,12 +33,7 @@ const float* f32(Weights w, const Tensor& t) {
 __device__ unsigned thread_index() {
     return blockIdx.x * blockDim.x + threadIdx.x;
 }
-__device__ float f16_to_float(std::uint16_t bits) {
-    return __half2float(__ushort_as_half(bits));
-}
-__device__ std::uint16_t float_to_f16(float f) {
-    return __half_as_ushort(__float2half(f));
-}
+static_assert(KvFormat<Kv>);
 
 // The embedding row of one token.
 __global__ void embed_kernel(const std::uint16_t* row, float* out) {
@@ -102,60 +95,64 @@ __global__ void rope_kernel(const float* x, const float* cos_sin, float* y, unsi
     out[i + kHalf]     = in[i] * s + in[i + kHalf] * c;
 }
 
-// Writes this position's K and V into its slot of the cache, rounded to F16.
-__global__ void store_kv_kernel(const float* k, const float* v, std::uint16_t* k_slot,
-                                std::uint16_t* v_slot) {
+// Writes this position's K and V into its slot of the cache, in the cache's format.
+template <KvFormat F>
+__global__ void store_kv_kernel(const float* k, const float* v, typename F::Bits* k_slot,
+                                typename F::Bits* v_slot) {
     const unsigned i = thread_index();
     if (i < kKvPerPos) {
-        k_slot[i] = float_to_f16(k[i]);
-        v_slot[i] = float_to_f16(v[i]);
+        k_slot[i] = F::store(k[i]);
+        v_slot[i] = F::store(v[i]);
     }
 }
 
 // What ggml's CPU flash attention computes for one output element with an F16 cache: an
 // online softmax over the positions, with the running weighted sum kept in F16.
-__device__ float online_softmax_f16(const float* scores, const std::uint16_t* v, unsigned n_kv) {
-    float         max = -INFINITY;
-    float         sum = 0;
-    std::uint16_t acc = float_to_f16(0.0f);
+template <KvFormat F>
+__device__ float online_softmax_f16(const float* scores, const typename F::Bits* v,
+                                    unsigned n_kv) {
+    float       max = -INFINITY;
+    float       sum = 0;
+    KvF16::Bits acc = KvF16::store(0.0f);
     for (unsigned j = 0; j < n_kv; ++j) {
         float rescale = 1.0f; // of what is summed so far, when a new maximum arrives
         float weight  = 1.0f; // exp(score - max) of this position
         if (scores[j] > max) {
             rescale = expf(max - scores[j]);
             max     = scores[j];
-            acc     = float_to_f16(f16_to_float(acc) * rescale);
+            acc     = KvF16::store(KvF16::load(acc) * rescale);
         } else {
             weight = expf(scores[j] - max);
         }
-        acc = float_to_f16(f16_to_float(acc) + f16_to_float(v[j * kKvPerPos]) * weight);
+        acc = KvF16::store(KvF16::load(acc) + F::load(v[j * kKvPerPos]) * weight);
         sum = sum * rescale + weight;
     }
-    return f16_to_float(acc) * (1.0f / sum);
+    return KvF16::load(acc) * (1.0f / sum);
 }
 
 // Grouped-query attention of one step over the n_kv cached positions. One block per query
 // head: the scores against every cached K, their softmax, then the weighted sum of the
 // cached V. scores is scratch memory for n_head * n_kv values.
-__global__ void attention_kernel(const float* q, const std::uint16_t* k_cache,
-                                 const std::uint16_t* v_cache, unsigned n_kv, float* scores,
+template <KvFormat F>
+__global__ void attention_kernel(const float* q, const typename F::Bits* k_cache,
+                                 const typename F::Bits* v_cache, unsigned n_kv, float* scores,
                                  float* out, Arithmetic arithmetic) {
     const unsigned head = blockIdx.x;
     // Consecutive query heads share a KV head, as in ggml.
-    const unsigned       kv_head  = head / (n_head / n_head_kv);
-    const float*         qh       = q + head * head_dim;
-    const std::uint16_t* k        = k_cache + kv_head * head_dim; // this head at position 0
-    const std::uint16_t* v        = v_cache + kv_head * head_dim;
-    float*               s        = scores + std::size_t{head} * n_kv;
-    const float          scale    = 1.0f / sqrtf(static_cast<float>(head_dim));
-    const bool           as_llama = arithmetic == Arithmetic::llama_cpu;
+    const unsigned          kv_head  = head / (n_head / n_head_kv);
+    const float*            qh       = q + head * head_dim;
+    const typename F::Bits* k        = k_cache + kv_head * head_dim; // this head at position 0
+    const typename F::Bits* v        = v_cache + kv_head * head_dim;
+    float*                  s        = scores + std::size_t{head} * n_kv;
+    const float             scale    = 1.0f / sqrtf(static_cast<float>(head_dim));
+    const bool              as_llama = arithmetic == Arithmetic::llama_cpu;
 
     for (unsigned j = threadIdx.x; j < n_kv; j += blockDim.x) {
         float dot = 0;
         for (unsigned i = 0; i < head_dim; ++i) {
-            // ggml rounds Q to the cache's F16 before the dot product.
-            const float qi = as_llama ? f16_to_float(float_to_f16(qh[i])) : qh[i];
-            dot += f16_to_float(k[j * kKvPerPos + i]) * qi;
+            // ggml rounds Q to its cache's F16 before the dot product.
+            const float qi = as_llama ? KvF16::load(KvF16::store(qh[i])) : qh[i];
+            dot += F::load(k[j * kKvPerPos + i]) * qi;
         }
         s[j] = dot * scale;
     }
@@ -163,7 +160,7 @@ __global__ void attention_kernel(const float* q, const std::uint16_t* k_cache,
 
     if (as_llama) {
         for (unsigned i = threadIdx.x; i < head_dim; i += blockDim.x) {
-            out[head * head_dim + i] = online_softmax_f16(s, v + i, n_kv);
+            out[head * head_dim + i] = online_softmax_f16<F>(s, v + i, n_kv);
         }
         return;
     }
@@ -190,7 +187,7 @@ __global__ void attention_kernel(const float* q, const std::uint16_t* k_cache,
     for (unsigned i = threadIdx.x; i < head_dim; i += blockDim.x) {
         float sum = 0;
         for (unsigned j = 0; j < n_kv; ++j) {
-            sum += s[j] * f16_to_float(v[j * kKvPerPos + i]);
+            sum += s[j] * F::load(v[j * kKvPerPos + i]);
         }
         out[head * head_dim + i] = sum;
     }
@@ -276,8 +273,8 @@ std::optional<CudaError> step(Decoder& d, Token token, const Trace* in) {
         const auto&             L       = model::layers[l];
         LayerTrace* const       a       = &t->layers[l];
         const LayerTrace* const i       = &in->layers[l];
-        std::uint16_t* const    k_cache = d.k_cache.get() + l * d.n_ctx * kKvPerPos;
-        std::uint16_t* const    v_cache = d.v_cache.get() + l * d.n_ctx * kKvPerPos;
+        Kv::Bits* const         k_cache = d.k_cache.get() + l * d.n_ctx * kKvPerPos;
+        Kv::Bits* const         v_cache = d.v_cache.get() + l * d.n_ctx * kKvPerPos;
 
         rms_norm(w, L.attn_norm, x, a->attn_norm, 1);
         matvec(w, L.q, i->attn_norm, a->Qcur, arith);
@@ -289,11 +286,11 @@ std::optional<CudaError> step(Decoder& d, Token token, const Trace* in) {
                                                           n_head);
         rope_kernel<<<blocks(n_head_kv * kHalf), kThreads>>>(i->Kcur_normed, rope, a->Kcur_rope,
                                                              n_head_kv);
-        store_kv_kernel<<<blocks(kKvPerPos), kThreads>>>(i->Kcur_rope, i->Vcur,
+        store_kv_kernel<Kv><<<blocks(kKvPerPos), kThreads>>>(i->Kcur_rope, i->Vcur,
                                                          k_cache + d.n_past * kKvPerPos,
                                                          v_cache + d.n_past * kKvPerPos);
-        attention_kernel<<<n_head, kThreads>>>(i->Qcur_rope, k_cache, v_cache, n_kv,
-                                               d.scores.get(), a->kqv_out, arith);
+        attention_kernel<Kv><<<n_head, kThreads>>>(i->Qcur_rope, k_cache, v_cache, n_kv,
+                                                   d.scores.get(), a->kqv_out, arith);
         matvec(w, L.o, i->kqv_out, a->attn_out, arith);
         add_kernel<<<blocks(n_embd), kThreads>>>(i->attn_out, x, a->ffn_inp, n_embd);
 
