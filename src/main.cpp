@@ -43,9 +43,9 @@ int main(int argc, char** argv) {
     if (const auto* e = std::get_if<mk::CudaError>(&sms)) {
         return cuda_failed(*e);
     }
-    if (std::get<unsigned>(sms) != mk::BuildGpu::sms) {
+    if (std::get<unsigned>(sms) != mk::EngineConfig::Gpu::sms) {
         std::println(stderr, "engine: built for the {} ({} SMs), this GPU has {} SMs",
-                     mk::BuildGpu::name, mk::BuildGpu::sms, std::get<unsigned>(sms));
+                     mk::EngineConfig::Gpu::name, mk::EngineConfig::Gpu::sms, std::get<unsigned>(sms));
         return 1;
     }
 

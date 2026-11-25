@@ -10,11 +10,6 @@
 
 namespace mk {
 namespace {
-constexpr unsigned kThreads       = kMegaThreads;
-constexpr unsigned kBlocks        = kMegaBlocks;
-constexpr unsigned kWarpsPerBlock = kThreads / 32;
-constexpr unsigned kWarps         = kBlocks * kWarpsPerBlock;
-constexpr unsigned kBlocksPerSm   = kBlocks / BuildGpu::sms;
 // One barrier after the embedding, six per layer, one after the logits.
 constexpr unsigned kBarriers = 2 + 6 * static_cast<unsigned>(n_layer);
 // About a second of spinning. A barrier that waits this long will never be met.
@@ -29,20 +24,27 @@ constexpr unsigned kQ         = n_head * head_dim;    // the width of Q and of k
 constexpr unsigned kKvPerPos  = n_head_kv * head_dim; // cache entries per layer and position
 constexpr unsigned kGroup     = n_head / n_head_kv;   // query heads per KV head
 constexpr unsigned kKvHeads   = n_head_kv;
-// Attention splits the grid by KV head: block b works for KV head b % kKvHeads, as its
-// member b / kKvHeads.
-constexpr unsigned kMembers   = kBlocks / kKvHeads;
 constexpr unsigned kLaneDims  = kHeadDim / 32; // head dimensions one lane of a warp holds
 constexpr unsigned kVocab     = n_vocab;
+static_assert(kHeadDim % 32 == 0);
 
-// row_dot reads a row 256 weights at a time, 16 bytes per thread.
-static_assert(kEmbd % 256 == 0 && kFf % 256 == 0 && kQ % 256 == 0);
-static_assert(kHeadDim <= kThreads && kThreads % 32 == 0);
-static_assert(kBlocks % kKvHeads == 0 && kHeadDim % 32 == 0);
-// The attention merges give one thread to each (query head of the group, dimension).
-static_assert(kThreads == kGroup * kHeadDim);
-// A warp's first row is warp * rows / kWarps, in 32 bits.
-static_assert(std::uint64_t{kWarps} * kVocab < (std::uint64_t{1} << 32));
+// Attention splits the grid by KV head: block b works for KV head b % kKvHeads, as its
+// member b / kKvHeads.
+template <MegakernelConfig C>
+constexpr unsigned kMembers = Grid<C>::blocks / kKvHeads;
+
+// What a grid must satisfy to run this model. Checked when the kernel is instantiated.
+template <MegakernelConfig C>
+constexpr bool grid_fits_model =
+    // The row kernel reads whole steps of every matrix it is given.
+    kEmbd % C::RowKernel::step == 0 && kFf % C::RowKernel::step == 0 &&
+    kQ % C::RowKernel::step == 0 &&
+    // Each KV head gets the same number of blocks.
+    Grid<C>::blocks % kKvHeads == 0 &&
+    // The attention merges give one thread to each (query head of the group, dimension).
+    Grid<C>::threads == kGroup * kHeadDim &&
+    // A warp's first row is warp * rows / warps, in 32 bits.
+    std::uint64_t{Grid<C>::warps} * kVocab < (std::uint64_t{1} << 32);
 
 // Where each tensor starts, as constants in the kernel.
 struct LayerOffsets {
@@ -82,15 +84,9 @@ __device__ float fresh(const float* p) {
     return *v;
 }
 
-__device__ float warp_sum(float v) {
-    for (unsigned lanes = 16; lanes > 0; lanes /= 2) {
-        v += __shfl_xor_sync(0xffffffffu, v, lanes);
-    }
-    return v;
-}
-
 // The sum of v over the block's threads. Every thread gets the result. scratch is shared
 // memory for one value per warp.
+template <MegakernelConfig C>
 __device__ float block_sum(float v, float* scratch) {
     v = warp_sum(v);
     if (threadIdx.x % 32 == 0) {
@@ -98,7 +94,7 @@ __device__ float block_sum(float v, float* scratch) {
     }
     __syncthreads();
     float total = 0;
-    for (unsigned w = 0; w < kWarpsPerBlock; ++w) {
+    for (unsigned w = 0; w < Grid<C>::warps_per_block; ++w) {
         total += scratch[w];
     }
     __syncthreads(); // scratch is free again
@@ -107,7 +103,8 @@ __device__ float block_sum(float v, float* scratch) {
 
 // Waits until every block of the grid has finished the phase that ends here. target is
 // what sync->arrived reaches then.
-__device__ void barrier(MegaSync* sync, unsigned target) {
+template <MegakernelConfig C>
+__device__ void barrier(MegaSync<C>* sync, unsigned target) {
     __threadfence(); // this thread's writes are visible to the whole device
     __syncthreads();
     if (threadIdx.x == 0) {
@@ -127,68 +124,49 @@ __device__ void barrier(MegaSync* sync, unsigned target) {
 }
 
 // Copies n values that other blocks wrote into the block's shared memory.
+template <MegakernelConfig C>
 __device__ void load(const float* x, unsigned n, float* xs) {
-    for (unsigned i = threadIdx.x; i < n; i += kThreads) {
+    for (unsigned i = threadIdx.x; i < n; i += Grid<C>::threads) {
         xs[i] = fresh(x + i);
     }
     __syncthreads();
 }
 
 // The same, through RMSNorm: xs = x / sqrt(mean(x^2) + eps) * weight.
+template <MegakernelConfig C>
 __device__ void load_normed(const float* x, const float* weight, unsigned n, float* xs,
                             float* scratch) {
     float squares = 0;
-    for (unsigned i = threadIdx.x; i < n; i += kThreads) {
+    for (unsigned i = threadIdx.x; i < n; i += Grid<C>::threads) {
         xs[i] = fresh(x + i);
         squares += xs[i] * xs[i];
     }
     const float scale =
-        1.0f / sqrtf(block_sum(squares, scratch) / static_cast<float>(n) + kNormEps);
-    for (unsigned i = threadIdx.x; i < n; i += kThreads) {
+        1.0f / sqrtf(block_sum<C>(squares, scratch) / static_cast<float>(n) + kNormEps);
+    for (unsigned i = threadIdx.x; i < n; i += Grid<C>::threads) {
         xs[i] = xs[i] * scale * weight[i];
     }
     __syncthreads();
 }
 
-// The dot product of one BF16 row of Cols weights with xs, computed by the whole warp: each
-// lane takes 8 consecutive weights (16 bytes) at a time, so the warp reads 512 contiguous
-// bytes per step. Every lane gets the result.
-template <unsigned Cols>
-__device__ float row_dot(const std::uint16_t* row, const float* xs) {
-    float sum = 0;
-    for (unsigned c = (threadIdx.x % 32) * 8; c < Cols; c += 256) {
-        // Aligned: tensors start on 32 bytes and a row is a multiple of 16 bytes.
-        const uint4  w = *reinterpret_cast<const uint4*>(row + c);
-        const float* x = xs + c;
-        sum += bf16_to_float(static_cast<std::uint16_t>(w.x)) * x[0] +
-               bf16_to_float(static_cast<std::uint16_t>(w.x >> 16)) * x[1] +
-               bf16_to_float(static_cast<std::uint16_t>(w.y)) * x[2] +
-               bf16_to_float(static_cast<std::uint16_t>(w.y >> 16)) * x[3] +
-               bf16_to_float(static_cast<std::uint16_t>(w.z)) * x[4] +
-               bf16_to_float(static_cast<std::uint16_t>(w.z >> 16)) * x[5] +
-               bf16_to_float(static_cast<std::uint16_t>(w.w)) * x[6] +
-               bf16_to_float(static_cast<std::uint16_t>(w.w >> 16)) * x[7];
-    }
-    return warp_sum(sum);
-}
-
 // The schedule of a matrix: the grid's warps split its rows into equal contiguous runs.
-// Warp g takes rows [g * rows / kWarps, (g + 1) * rows / kWarps), so every row has exactly
+// Warp g takes rows [g * rows / warps, (g + 1) * rows / warps), so every row has exactly
 // one warp.
 struct Rows {
     unsigned begin, end;
 };
+template <MegakernelConfig C>
 __device__ Rows my_rows(unsigned rows) {
-    const unsigned warp = blockIdx.x * kWarpsPerBlock + threadIdx.x / 32;
-    return {warp * rows / kWarps, (warp + 1) * rows / kWarps};
+    const unsigned warp = blockIdx.x * Grid<C>::warps_per_block + threadIdx.x / 32;
+    return {warp * rows / Grid<C>::warps, (warp + 1) * rows / Grid<C>::warps};
 }
 
 // store(row, W[row] . xs) for each of this warp's rows of a rows x Cols matrix.
-template <unsigned Cols, class Store>
+template <MegakernelConfig C, unsigned Cols, class Store>
 __device__ void for_rows(const std::uint16_t* w, unsigned rows, const float* xs, Store store) {
-    const Rows mine = my_rows(rows);
+    const Rows mine = my_rows<C>(rows);
     for (unsigned r = mine.begin; r < mine.end; ++r) {
-        const float y = row_dot<Cols>(w + std::size_t{r} * Cols, xs);
+        const float y = C::RowKernel::template dot<Cols>(w + std::size_t{r} * Cols, xs);
         if (threadIdx.x % 32 == 0) {
             store(r, y);
         }
@@ -212,16 +190,17 @@ __device__ float rescale(float max, float to) {
 
 // The first half of attention, by every block: this block's part of the softmax of one KV
 // head's two query heads. The grid's warps split the cached positions among them, position
-// j going to warp j % (kMembers * kWarpsPerBlock) of the KV head's blocks. A warp reads the
+// j going to warp j % (members * warps per block) of the KV head's blocks. A warp reads the
 // K and V of a position once, for both query heads, each lane holding kLaneDims
 // dimensions. This step's own K and V come from shared memory, in the cache's precision.
-template <DecoderConfig C>
+template <MegakernelConfig C>
 __device__ void attention_part(unsigned kv_head, unsigned member, const LayerTrace* in,
                                const float* q_norm, const float* k_norm,
                                typename C::Kv::Bits* k_cache, typename C::Kv::Bits* v_cache,
                                const float* rope, unsigned pos, AttnPartial* mine,
                                float* scratch) {
     using Kv = typename C::Kv;
+    constexpr unsigned kWarpsPerBlock = Grid<C>::warps_per_block;
     __shared__ float q[kGroup][kHeadDim];
     __shared__ float k[kHeadDim];
     __shared__ float v[kHeadDim];
@@ -245,7 +224,7 @@ __device__ void attention_part(unsigned kv_head, unsigned member, const LayerTra
     }
     float scale[kGroup + 1];
     for (unsigned h = 0; h <= kGroup; ++h) {
-        scale[h] = 1.0f / sqrtf(block_sum(squares[h], scratch) / n + kNormEps);
+        scale[h] = 1.0f / sqrtf(block_sum<C>(squares[h], scratch) / n + kNormEps);
     }
     if (t < kHeadDim) {
         for (unsigned h = 0; h < kGroup; ++h) {
@@ -292,7 +271,7 @@ __device__ void attention_part(unsigned kv_head, unsigned member, const LayerTra
     for (unsigned h = 0; h < kGroup; ++h) {
         max[h] = -INFINITY;
     }
-    for (unsigned j = member * kWarpsPerBlock + warp; j <= pos; j += kMembers * kWarpsPerBlock) {
+    for (unsigned j = member * kWarpsPerBlock + warp; j <= pos; j += kMembers<C> * kWarpsPerBlock) {
         float kj[kLaneDims];
         float vj[kLaneDims];
         for (unsigned d = 0; d < kLaneDims; ++d) {
@@ -357,13 +336,14 @@ __device__ void attention_part(unsigned kv_head, unsigned member, const LayerTra
 
 // The second half, by one block per KV head: merges the blocks' partials into kqv_out.
 // parts is the first member's partial; member m's is kKvHeads further for each m.
+template <MegakernelConfig C>
 __device__ void attention_merge(unsigned kv_head, unsigned pos, const AttnPartial* parts,
                                 LayerTrace* out) {
-    __shared__ float max[kGroup][kMembers];
-    __shared__ float sum[kGroup][kMembers];
+    __shared__ float max[kGroup][kMembers<C>];
+    __shared__ float sum[kGroup][kMembers<C>];
     const unsigned   t = threadIdx.x;
     // Members past this one saw no position yet.
-    const unsigned members = min(kMembers, pos / kWarpsPerBlock + 1);
+    const unsigned members = min(kMembers<C>, pos / Grid<C>::warps_per_block + 1);
     if (t < kGroup * members) {
         const AttnPartial& part = parts[(t / kGroup) * kKvHeads];
         max[t % kGroup][t / kGroup] = fresh(&part.max[t % kGroup]);
@@ -386,18 +366,115 @@ __device__ void attention_merge(unsigned kv_head, unsigned pos, const AttnPartia
     out->kqv_out[(kv_head * kGroup + h) * kHeadDim + i] = value / total;
 }
 
+// What a phase of one layer works on.
+template <MegakernelConfig C>
+struct Step {
+    const std::byte*      base;
+    const LayerOffsets*   w;       // where the layer's tensors start
+    const LayerTrace*     in;      // what the phases read
+    LayerTrace*           out;     // what they write: the same trace in a normal step
+    const float*          x;       // the residual stream entering the layer
+    typename C::Kv::Bits* k_cache; // the layer's cache
+    typename C::Kv::Bits* v_cache;
+    const float*          rope;     // this position's row of the table
+    unsigned              pos;
+    AttnPartial*          partials; // one per block
+    float*                xs;       // shared memory: the vector of the phase's matrix products
+    float*                scratch;  // shared memory: one value per warp
+};
+
+// Q, K and V of the normed residual stream.
+struct QkvPhase {
+    template <MegakernelConfig C>
+    __device__ static void run(const Step<C>& s) {
+        LayerTrace* const a = s.out;
+        load_normed<C>(s.x, f32_at(s.base, s.w->attn_norm), kEmbd, s.xs, s.scratch);
+        for_rows<C, kEmbd>(bf16_at(s.base, s.w->q), kQ, s.xs,
+                           [a](unsigned r, float y) { a->Qcur[r] = y; });
+        for_rows<C, kEmbd>(bf16_at(s.base, s.w->k), kKvPerPos, s.xs,
+                           [a](unsigned r, float y) { a->Kcur[r] = y; });
+        for_rows<C, kEmbd>(bf16_at(s.base, s.w->v), kKvPerPos, s.xs,
+                           [a](unsigned r, float y) { a->Vcur[r] = y; });
+    }
+};
+
+// Every block sums its part of the softmax of one KV head's query heads.
+struct AttentionPartPhase {
+    template <MegakernelConfig C>
+    __device__ static void run(const Step<C>& s) {
+        attention_part<C>(blockIdx.x % kKvHeads, blockIdx.x / kKvHeads, s.in,
+                          f32_at(s.base, s.w->q_norm), f32_at(s.base, s.w->k_norm), s.k_cache,
+                          s.v_cache, s.rope, s.pos, s.partials + blockIdx.x, s.scratch);
+    }
+};
+
+// One block per KV head merges the parts into kqv_out.
+struct AttentionMergePhase {
+    template <MegakernelConfig C>
+    __device__ static void run(const Step<C>& s) {
+        if (blockIdx.x < kKvHeads) {
+            attention_merge<C>(blockIdx.x, s.pos, s.partials + blockIdx.x, s.out);
+        }
+    }
+};
+
+// The output projection, added to the residual stream.
+struct OutputPhase {
+    template <MegakernelConfig C>
+    __device__ static void run(const Step<C>& s) {
+        LayerTrace* const  a = s.out;
+        const float* const x = s.x;
+        load<C>(s.in->kqv_out, kQ, s.xs);
+        for_rows<C, kQ>(bf16_at(s.base, s.w->o), kEmbd, s.xs,
+                        [a, x](unsigned r, float y) { a->ffn_inp[r] = y + fresh(x + r); });
+    }
+};
+
+// Gate and up of the normed stream, through SwiGLU. A warp does both rows.
+struct FfnPhase {
+    template <MegakernelConfig C>
+    __device__ static void run(const Step<C>& s) {
+        load_normed<C>(s.in->ffn_inp, f32_at(s.base, s.w->ffn_norm), kEmbd, s.xs, s.scratch);
+        const std::uint16_t* gate = bf16_at(s.base, s.w->gate);
+        const std::uint16_t* up   = bf16_at(s.base, s.w->up);
+        const Rows           mine = my_rows<C>(kFf);
+        for (unsigned r = mine.begin; r < mine.end; ++r) {
+            const float g = C::RowKernel::template dot<kEmbd>(gate + std::size_t{r} * kEmbd, s.xs);
+            const float u = C::RowKernel::template dot<kEmbd>(up + std::size_t{r} * kEmbd, s.xs);
+            if (threadIdx.x % 32 == 0) {
+                s.out->ffn_swiglu[r] = g / (1.0f + expf(-g)) * u;
+            }
+        }
+    }
+};
+
+// Down, added to the residual stream.
+struct DownPhase {
+    template <MegakernelConfig C>
+    __device__ static void run(const Step<C>& s) {
+        LayerTrace* const       a = s.out;
+        const LayerTrace* const i = s.in;
+        load<C>(i->ffn_swiglu, kFf, s.xs);
+        for_rows<C, kFf>(bf16_at(s.base, s.w->down), kEmbd, s.xs, [a, i](unsigned r, float y) {
+            a->l_out[r] = y + fresh(i->ffn_inp + r);
+        });
+    }
+};
+
 // One decode step. out is the trace the phases write, in the trace they read: the same one
-// in a normal step.
-// The launch bounds make the compiler fit kBlocksPerSm blocks of this kernel on one SM.
-template <DecoderConfig C>
-__global__ void __launch_bounds__(kThreads, kBlocksPerSm)
-megakernel(Weights weights, Trace* out, const Trace* in,
-                           typename C::Kv::Bits* k_cache, typename C::Kv::Bits* v_cache,
-                           const float* rope, AttnPartial* partials, MegaSync* sync, unsigned token,
-                           unsigned pos, unsigned epoch) {
+// in a normal step. The launch bounds make the compiler fit the grid's blocks on one SM.
+template <MegakernelConfig C>
+__global__ void __launch_bounds__(C::threads, C::blocks_per_sm)
+megakernel(Weights weights, Trace* out, const Trace* in, typename C::Kv::Bits* k_cache,
+           typename C::Kv::Bits* v_cache, const float* rope, AttnPartial* partials,
+           MegaSync<C>* sync, unsigned token, unsigned pos, unsigned epoch) {
+    static_assert(grid_fits_model<C>, "this grid cannot run this model");
+    constexpr unsigned kBlocks        = Grid<C>::blocks;
+    constexpr unsigned kThreads       = Grid<C>::threads;
+    constexpr unsigned kWarpsPerBlock = Grid<C>::warps_per_block;
     // static: without it every thread rebuilds the table on its stack.
     static constexpr Offsets offsets = kOffsets;
-    __shared__ float         xs[kFf]; // the vector of the phase's matrix products
+    __shared__ float         xs[kFf];
     __shared__ float         scratch[kWarpsPerBlock];
     const std::byte* const   base    = weights.base;
     unsigned                 arrived = epoch; // what sync->arrived reaches at the next barrier
@@ -409,78 +486,41 @@ megakernel(Weights weights, Trace* out, const Trace* in,
             out->embd[i] = bf16_to_float(row[i]);
         }
     }
-    barrier(sync, arrived += kBlocks);
+    barrier<C>(sync, arrived += kBlocks);
 
     const float* x = in->embd; // the residual stream
     for (unsigned l = 0; l < n_layer; ++l) {
-        const LayerOffsets&      o = offsets.layer[l];
-        LayerTrace* const        a = &out->layers[l];
-        const LayerTrace* const  i = &in->layers[l];
-        const std::size_t cache    = std::size_t{l} * C::n_ctx * kKvPerPos;
-
-        // Q, K and V of the normed residual stream.
-        load_normed(x, f32_at(base, o.attn_norm), kEmbd, xs, scratch);
-        for_rows<kEmbd>(bf16_at(base, o.q), kQ, xs, [a](unsigned r, float y) { a->Qcur[r] = y; });
-        for_rows<kEmbd>(bf16_at(base, o.k), kKvPerPos, xs,
-                        [a](unsigned r, float y) { a->Kcur[r] = y; });
-        for_rows<kEmbd>(bf16_at(base, o.v), kKvPerPos, xs,
-                        [a](unsigned r, float y) { a->Vcur[r] = y; });
-        barrier(sync, arrived += kBlocks);
-
-        // Attention. Every block sums its part of the softmax of one KV head's query
-        // heads, then one block per KV head merges the parts.
-        attention_part<C>(blockIdx.x % kKvHeads, blockIdx.x / kKvHeads, i, f32_at(base, o.q_norm),
-                          f32_at(base, o.k_norm), k_cache + cache, v_cache + cache, rope, pos,
-                          partials + blockIdx.x, scratch);
-        barrier(sync, arrived += kBlocks);
-        if (blockIdx.x < kKvHeads) {
-            attention_merge(blockIdx.x, pos, partials + blockIdx.x, a);
-        }
-        barrier(sync, arrived += kBlocks);
-
-        // The output projection, added to the residual stream.
-        load(i->kqv_out, kQ, xs);
-        for_rows<kQ>(bf16_at(base, o.o), kEmbd, xs,
-                     [a, x](unsigned r, float y) { a->ffn_inp[r] = y + fresh(x + r); });
-        barrier(sync, arrived += kBlocks);
-
-        // Gate and up of the normed stream, through SwiGLU. A warp does both rows.
-        load_normed(i->ffn_inp, f32_at(base, o.ffn_norm), kEmbd, xs, scratch);
-        {
-            const std::uint16_t* gate = bf16_at(base, o.gate);
-            const std::uint16_t* up   = bf16_at(base, o.up);
-            const Rows           mine = my_rows(kFf);
-            for (unsigned r = mine.begin; r < mine.end; ++r) {
-                const float g = row_dot<kEmbd>(gate + std::size_t{r} * kEmbd, xs);
-                const float u = row_dot<kEmbd>(up + std::size_t{r} * kEmbd, xs);
-                if (threadIdx.x % 32 == 0) {
-                    a->ffn_swiglu[r] = g / (1.0f + expf(-g)) * u;
-                }
-            }
-        }
-        barrier(sync, arrived += kBlocks);
-
-        // Down, added to the residual stream.
-        load(i->ffn_swiglu, kFf, xs);
-        for_rows<kFf>(bf16_at(base, o.down), kEmbd, xs, [a, i](unsigned r, float y) {
-            a->l_out[r] = y + fresh(i->ffn_inp + r);
-        });
-        barrier(sync, arrived += kBlocks);
-        x = i->l_out;
+        const std::size_t cache = std::size_t{l} * C::n_ctx * kKvPerPos;
+        const Step<C>     s{base,     &offsets.layer[l], &in->layers[l], &out->layers[l],
+                            x,        k_cache + cache,   v_cache + cache, rope,
+                            pos,      partials,          xs,              scratch};
+        QkvPhase::run(s);
+        barrier<C>(sync, arrived += kBlocks);
+        AttentionPartPhase::run(s);
+        barrier<C>(sync, arrived += kBlocks);
+        AttentionMergePhase::run(s);
+        barrier<C>(sync, arrived += kBlocks);
+        OutputPhase::run(s);
+        barrier<C>(sync, arrived += kBlocks);
+        FfnPhase::run(s);
+        barrier<C>(sync, arrived += kBlocks);
+        DownPhase::run(s);
+        barrier<C>(sync, arrived += kBlocks);
+        x = in->layers[l].l_out;
     }
 
     // The logits of the normed stream, and each block's best one. A later row wins only if
     // it is strictly larger, so the first maximum wins, as in llama.cpp's greedy sampler.
-    load_normed(x, f32_at(base, offsets.output_norm), kEmbd, xs, scratch);
+    load_normed<C>(x, f32_at(base, offsets.output_norm), kEmbd, xs, scratch);
     {
         __shared__ float     warp_logit[kWarpsPerBlock];
         __shared__ unsigned  warp_token[kWarpsPerBlock];
         const std::uint16_t* w    = bf16_at(base, offsets.output);
-        const Rows           mine = my_rows(kVocab);
+        const Rows           mine = my_rows<C>(kVocab);
         float                best = -INFINITY;
         unsigned             at   = mine.begin;
         for (unsigned r = mine.begin; r < mine.end; ++r) {
-            const float y = row_dot<kEmbd>(w + std::size_t{r} * kEmbd, xs);
+            const float y = C::RowKernel::template dot<kEmbd>(w + std::size_t{r} * kEmbd, xs);
             if (threadIdx.x % 32 == 0) {
                 out->result_output[r] = y;
                 if (y > best) {
@@ -506,7 +546,7 @@ megakernel(Weights weights, Trace* out, const Trace* in,
             sync->best_token[blockIdx.x] = warp_token[first];
         }
     }
-    barrier(sync, arrived += kBlocks);
+    barrier<C>(sync, arrived += kBlocks);
 
     if (blockIdx.x == 0 && threadIdx.x == 0) {
         const volatile float*    logit = sync->best_logit;
@@ -529,11 +569,11 @@ cudaError_t device_new(std::unique_ptr<T, CudaFree>& out, std::size_t count) {
     return e;
 }
 
-template <DecoderConfig C>
+template <MegakernelConfig C>
 std::variant<Token, CudaError> launch(Megakernel<C>& m, Decoder<C>& d, Token token,
                                       const Trace* in) {
     assert(d.n_past < C::n_ctx);
-    megakernel<C><<<kBlocks, kThreads>>>(d.weights, d.trace.get(), in, d.k_cache.get(),
+    megakernel<C><<<Grid<C>::blocks, Grid<C>::threads>>>(d.weights, d.trace.get(), in, d.k_cache.get(),
                                          d.v_cache.get(),
                                          d.rope.get() + std::size_t{d.n_past} * head_dim,
                                          static_cast<AttnPartial*>(m.partials.get()),
@@ -545,37 +585,37 @@ std::variant<Token, CudaError> launch(Megakernel<C>& m, Decoder<C>& d, Token tok
     if (result[0] != 0) {
         return CudaError{"megakernel", "a barrier gave up waiting for the rest of the grid"};
     }
-    m.epoch += kBarriers * kBlocks;
+    m.epoch += kBarriers * Grid<C>::blocks;
     ++d.n_past;
     return *Token::checked(result[1]); // a row of the output matrix: inside the vocabulary
 }
 } // namespace
 
-template <DecoderConfig C>
+template <MegakernelConfig C>
 std::variant<Megakernel<C>, CudaError> Megakernel<C>::make() {
     // A barrier waits for every block, so every block must be running. That holds only if
     // each SM can keep its share of the grid resident.
     int resident = 0;
     MK_TRY(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&resident, megakernel<C>,
-                                                         static_cast<int>(kThreads), 0));
-    if (resident < static_cast<int>(kBlocksPerSm)) {
+                                                         static_cast<int>(C::threads), 0));
+    if (resident < static_cast<int>(C::blocks_per_sm)) {
         return CudaError{"megakernel", "the GPU cannot keep the whole grid resident"};
     }
     Megakernel m;
     MK_TRY(device_new(m.sync, 1));
-    MK_TRY(cudaMemset(m.sync.get(), 0, sizeof(MegaSync)));
+    MK_TRY(cudaMemset(m.sync.get(), 0, sizeof(MegaSync<C>)));
     void* partials = nullptr;
-    MK_TRY(cudaMalloc(&partials, kBlocks * sizeof(AttnPartial)));
+    MK_TRY(cudaMalloc(&partials, Grid<C>::blocks * sizeof(AttnPartial)));
     m.partials.reset(partials);
     return m;
 }
 
-template <DecoderConfig C>
+template <MegakernelConfig C>
 std::variant<Token, CudaError> Megakernel<C>::decode(Decoder<C>& d, Token token) {
     return launch(*this, d, token, d.trace.get());
 }
 
-template <DecoderConfig C>
+template <MegakernelConfig C>
 std::variant<Token, CudaError> Megakernel<C>::decode_from(Decoder<C>& d, Token token,
                                                           const Trace& from) {
     if (!operands) {

@@ -1,6 +1,6 @@
 #pragma once
+#include "config.hpp"
 #include "forward.hpp"
-#include "gpu.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -10,30 +10,28 @@
 // the same list of phases, and a grid-wide barrier separates a phase from the one that reads
 // its results. nvcc compiles this header: C++20 only.
 namespace mk {
-// 4 blocks of 256 threads on each SM, all resident at once. The barriers rely on that.
-inline constexpr unsigned kMegaThreads = 256;
-inline constexpr unsigned kMegaBlocks  = BuildGpu::sms * 4;
-
 // What the blocks of one launch share, on the device.
+template <MegakernelConfig C>
 struct MegaSync {
     unsigned arrived; // blocks that have reached a barrier, counted over every launch
     unsigned failed;  // set when a barrier gave up waiting
     unsigned token;   // the step's most likely next token
     // Each block's best logit and its token, before the last reduction.
-    float    best_logit[kMegaBlocks];
-    unsigned best_token[kMegaBlocks];
+    float    best_logit[Grid<C>::blocks];
+    unsigned best_token[Grid<C>::blocks];
 };
 
-// The megakernel for configuration C. It decodes into a Decoder<C>, which owns the KV
-// cache and the trace, and writes the tensors it materializes into that trace: embd, Qcur,
-// Kcur, Vcur, kqv_out, ffn_inp, ffn_swiglu, l_out and result_output. The other fields of
-// the trace are fused away and stay untouched.
-template <DecoderConfig C>
+// The megakernel for configuration C. Its grid is Grid<C>: every SM of C::Gpu runs
+// C::blocks_per_sm blocks, all resident at once, which the barriers rely on. It decodes
+// into a Decoder<C>, which owns the KV cache and the trace, and writes the tensors it
+// materializes into that trace: embd, Qcur, Kcur, Vcur, kqv_out, ffn_inp, ffn_swiglu, l_out
+// and result_output. The other fields of the trace are fused away and stay untouched.
+template <MegakernelConfig C>
 struct Megakernel {
-    std::unique_ptr<MegaSync, CudaFree> sync;
-    std::unique_ptr<void, CudaFree>     partials; // each block's part of an attention softmax
-    std::uint32_t                       epoch = 0; // what `arrived` was before the next launch
-    std::unique_ptr<Trace, CudaFree>    operands;  // for decode_from; null until it is used
+    std::unique_ptr<MegaSync<C>, CudaFree> sync;
+    std::unique_ptr<void, CudaFree>        partials; // each block's part of an attention softmax
+    std::uint32_t                          epoch = 0; // what `arrived` was before the next launch
+    std::unique_ptr<Trace, CudaFree>       operands;  // for decode_from; null until it is used
 
     // Fails if the device cannot hold the whole grid at once.
     static std::variant<Megakernel, CudaError> make();

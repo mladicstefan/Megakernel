@@ -1,6 +1,6 @@
 #pragma once
 #include "checksum.hpp"
-#include "gpu.hpp"
+#include "config.hpp"
 #include "model.hpp"
 
 #include <algorithm>
@@ -86,8 +86,8 @@ struct Upload {
 // Allocates on the device and copies data there.
 std::variant<Upload, CudaError> upload(HostWeights data);
 
-// The SM count of the device in use. A build is compiled for BuildGpu::sms of them, and
-// nothing may launch a kernel on a device with another count.
+// The SM count of the device in use. A build is compiled for EngineConfig::Gpu::sms of
+// them, and nothing may launch a kernel on a device with another count.
 std::variant<unsigned, CudaError> device_sms();
 
 struct Checksums {
