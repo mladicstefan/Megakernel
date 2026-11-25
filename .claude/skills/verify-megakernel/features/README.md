@@ -47,3 +47,5 @@ these H2s, in order: `Sub-features`, `How to get to it (user POV)`,
   invalid keys and non-finite values are rejected.
 - [Build integration](./build-integration.md): `MODEL_GGUF` generates `model.hpp`, the
   engine builds, and edits rerun the right steps.
+- [Weights upload](./weights-upload.md): the engine verifies its GGUF, uploads the tensor
+  data to the GPU, proves the copy with per-tensor checksums, and rejects any other file.

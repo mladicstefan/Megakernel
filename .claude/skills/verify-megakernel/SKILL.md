@@ -50,6 +50,7 @@ It exits non-zero on a hard failure. Rerun `launch` after any source change.
 | `compile <header> <name> [check.hpp]` | Writes a probe program that includes the header (and the check file), uses `mk::find` on the first tensor, compiles it with `g++ -std=c++23 -Wall -Wextra -Wpedantic -Werror` and with `nvcc -std=c++20 -c`, then runs the g++ build. Evidence: `<name>.gcc.log`, `.nvcc.log`, `.probe.stdout`. |
 | `craft <kind> <name>` | Writes `<scratch>/craft/<name>.gguf` and prints its path. Kinds: `evil-strings` (also writes `<name>.gguf.check.hpp` with byte-exact `static_assert`s), `bad-key`, `digit-key`, `nonfinite`, `zero-tensors`. |
 | `engine <in.gguf>` | Configures `<scratch>/engine-build` with `MODEL_GGUF`, builds `engine`, runs it. Evidence: `engine.configure.log`, `engine.build.log`, `engine.stdout`. Prints the `Generating model.hpp` line. |
+| `run-engine <name> [args]` | Runs the engine that `engine` built, with the given arguments (a GGUF path, or none). Records `<name>.cmd`, `.stdout`, `.stderr` and `.exit`. Prints `exit=` and both streams. |
 
 The recipes per feature are in [features/README.md](features/README.md).
 

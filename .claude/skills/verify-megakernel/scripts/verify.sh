@@ -2,7 +2,7 @@
 # Drives gguf2hpp and the engine build the way a user does, and keeps the evidence.
 # Every call needs RUN_ID set, because each shell call starts fresh:
 #   RUN_ID=<id> verify.sh <command> [args]
-# Commands: launch | doctor | gen | compile | craft | engine | cleanup (see SKILL.md).
+# Commands: launch | doctor | gen | compile | craft | engine | run-engine | cleanup (see SKILL.md).
 set -euo pipefail
 
 REPO=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
@@ -116,6 +116,18 @@ engine) # engine <in.gguf>: configure the engine for a model, build it, run it
     echo "engine-build=$eb generated=$eb/generated/model.hpp"
     grep -E 'Generating model.hpp' "$EVIDENCE/engine.build.log" || echo "(no generation line in this build)"
     echo "stdout: $(cat "$EVIDENCE/engine.stdout")"
+    ;;
+run-engine) # run-engine <name> [args]: run the engine that `engine` built; record command, stdout, stderr, exit
+    name=$1
+    shift
+    eb=$SCRATCH/engine-build
+    echo "$eb/engine $*" >"$EVIDENCE/$name.cmd"
+    set +e; "$eb/engine" "$@" >"$EVIDENCE/$name.stdout" 2>"$EVIDENCE/$name.stderr"; code=$?; set -e
+    echo "$code" >"$EVIDENCE/$name.exit"
+    echo "exit=$code"
+    [[ -s $EVIDENCE/$name.stdout ]] && echo "stdout: $(cat "$EVIDENCE/$name.stdout")"
+    [[ -s $EVIDENCE/$name.stderr ]] && echo "stderr: $(cat "$EVIDENCE/$name.stderr")"
+    true
     ;;
 cleanup)
     rm -rf "$SCRATCH"
