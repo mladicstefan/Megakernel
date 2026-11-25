@@ -1,6 +1,6 @@
 # Roadmap
 
-Status as of 2026-11-25, `master` at `ea2e28f`. 74/74 tests pass, clean under ASan + UBSan.
+Status as of 2026-11-25. GGUF-Header is complete. 74/74 tests pass, clean under ASan + UBSan.
 
 ## GGUF-Header (build-time tool `gguf2hpp`)
 
@@ -13,7 +13,7 @@ Status as of 2026-11-25, `master` at `ea2e28f`. 74/74 tests pass, clean under AS
 | 5 | Tensor infos, alignment, data_start, sizes, extents, duplicates | done | `reader.cpp` |
 | 6 | Hash: XXH3 over `[0, data_start)` seeded with file size | done | `parse()` |
 | 7 | Emitter + generated `toy.hpp` checked by `static_assert` | done | `emitter.cpp`, `src/model_types.hpp` |
-| 8 | Engine `main` includes `model.hpp`, prints layer and tensor counts | **next** | `src/main.cpp` |
+| 8 | Engine `main` includes `model.hpp`, prints layer and tensor counts | done | `src/main.cpp` |
 
 Beyond the plan, done in milestone 7: a per-layer table (`model::layers[i].q`, numeric
 order) and a generated `qwen.hpp` checked in `emitter_test` when the model is present.
@@ -27,12 +27,21 @@ order) and a generated `qwen.hpp` checked in `emitter_test` when the model is pr
 | Compiles with g++ `-std=c++23` and nvcc `-std=c++20` | yes | yes; documented `constexpr Layer L = model::layers[3];` runs correctly on the GPU |
 | Tensor names in a binary that uses one tensor via `mk::find` | the used one or none | none |
 
-## Next: milestone 8
+### Milestone 8 measurements (Debug build, g++ 16)
 
-- `src/main.cpp` includes `model.hpp` and prints `model::meta::arch::block_count` and
-  `model::tensors.size()` (expect 28 and 311 for Qwen).
-- Configure with `-DMODEL_GGUF=models/Qwen_Qwen3-0.6B-bf16.gguf`; CMake already
-  generates `model.hpp` and puts `generated/` and `src/` on the engine's include path.
+| Measure | Expected | Measured |
+|---------|----------|----------|
+| Qwen output | `qwen3`, 28, 311 | `qwen3: 28 layers, 311 tensors` |
+| toy output | `toy`, 2, 2 | `toy: 2 layers, 2 tensors` |
+| Engine binary size | about the "Hello" baseline, 680,992 bytes | 704,104 bytes for Qwen, 704,040 for toy (+3.4%). Of the 23 KB, 16 KB is debug info and the rest is `std::format` code for three arguments. Stripped: 183,080 against 178,984. The model's size plays no part: Qwen and toy differ by 64 bytes |
+| Tensor-name strings in the engine binary | none | none |
+| Model changed | regenerates `model.hpp` and recompiles `main.cpp` | both |
+
+The `engine` target now exists only when `MODEL_GGUF` is set.
+
+## Next
+
+Plan the engine phases.
 
 ## Open items (accepted for now)
 

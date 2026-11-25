@@ -76,11 +76,7 @@ add_executable(gguf2hpp tools/gguf_header/main.cpp)
 target_link_libraries(gguf2hpp PRIVATE gguf_header project_warnings)
 
 # --- engine ---
-add_executable(engine src/main.cpp)
-target_link_libraries(engine PRIVATE project_warnings)
-# Generated headers include model_types.hpp from here.
-target_include_directories(engine PRIVATE ${CMAKE_SOURCE_DIR}/src)
-
+# main.cpp includes the generated model.hpp, so there is no engine without a model.
 set(MODEL_GGUF "" CACHE FILEPATH "GGUF to compile the engine for")
 if(MODEL_GGUF)
   add_custom_command(
@@ -90,10 +86,12 @@ if(MODEL_GGUF)
     DEPENDS gguf2hpp ${MODEL_GGUF}
     COMMENT "Generating model.hpp from ${MODEL_GGUF}"
   )
-  target_sources(engine PRIVATE ${GEN_DIR}/model.hpp)
-  target_include_directories(engine PRIVATE ${GEN_DIR})
+  add_executable(engine src/main.cpp ${GEN_DIR}/model.hpp)
+  target_link_libraries(engine PRIVATE project_warnings)
+  # src: the generated header includes model_types.hpp from there.
+  target_include_directories(engine PRIVATE ${GEN_DIR} ${CMAKE_SOURCE_DIR}/src)
 else()
-  message(WARNING "MODEL_GGUF not set: engine builds without model.hpp")
+  message(WARNING "MODEL_GGUF not set: the engine target is not built")
 endif()
 
 # --- tests ---
