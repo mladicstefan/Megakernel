@@ -147,16 +147,41 @@ __device__ void load_normed(const float* x, const float* weight, unsigned n, flo
     __syncthreads();
 }
 
-// The schedule of a matrix: the grid's warps split its rows into equal contiguous runs.
-// Warp g takes rows [g * rows / warps, (g + 1) * rows / warps), so every row has exactly
-// one warp.
+// The schedule of a matrix: the grid's warps split its rows into contiguous runs of equal
+// length, to within one row.
 struct Rows {
     unsigned begin, end;
 };
+// The rows of a matrix that warp `warp` of `warps` takes.
+MK_HOST_DEVICE constexpr Rows rows_of(unsigned warp, unsigned rows, unsigned warps) {
+    return {warp * rows / warps, (warp + 1) * rows / warps};
+}
+
+// Whether every row of a matrix has exactly one warp: the first run starts at row 0, each
+// run starts where the one before ended, and the last ends at the last row.
+constexpr bool partitions(unsigned rows, unsigned warps) {
+    unsigned next = 0;
+    for (unsigned warp = 0; warp < warps; ++warp) {
+        const Rows run = rows_of(warp, rows, warps);
+        if (run.begin != next || run.end < run.begin) {
+            return false;
+        }
+        next = run.end;
+    }
+    return next == rows;
+}
+
+// The proof for every matrix the megakernel multiplies, on this configuration's grid.
+template <MegakernelConfig C>
+constexpr bool rows_are_scheduled_once =
+    partitions(kQ, Grid<C>::warps) && partitions(kKvPerPos, Grid<C>::warps) &&
+    partitions(kEmbd, Grid<C>::warps) && partitions(kFf, Grid<C>::warps) &&
+    partitions(kVocab, Grid<C>::warps);
+
 template <MegakernelConfig C>
 __device__ Rows my_rows(unsigned rows) {
-    const unsigned warp = blockIdx.x * Grid<C>::warps_per_block + threadIdx.x / 32;
-    return {warp * rows / Grid<C>::warps, (warp + 1) * rows / Grid<C>::warps};
+    return rows_of(blockIdx.x * Grid<C>::warps_per_block + threadIdx.x / 32, rows,
+                   Grid<C>::warps);
 }
 
 // store(row, W[row] . xs) for each of this warp's rows of a rows x Cols matrix.
@@ -535,6 +560,7 @@ megakernel(Weights weights, Trace* out, const Trace* in, typename C::Kv::Bits* k
            typename C::Kv::Bits* v_cache, const float* rope, AttnPartial* partials,
            MegaSync<C>* sync, unsigned token, unsigned pos, unsigned epoch) {
     static_assert(grid_fits_model<C>, "this grid cannot run this model");
+    static_assert(rows_are_scheduled_once<C>, "a matrix row has no warp, or more than one");
     constexpr unsigned kBlocks        = Grid<C>::blocks;
     constexpr unsigned kThreads       = Grid<C>::threads;
     constexpr unsigned kWarpsPerBlock = Grid<C>::warps_per_block;
