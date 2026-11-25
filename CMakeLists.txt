@@ -112,7 +112,7 @@ if(MODEL_GGUF)
 
   if(MODEL_ARCH STREQUAL "qwen3")
     # The reference forward pass, and the tool that checks it against llama.cpp's dumps.
-    add_library(forward_pass STATIC src/forward.cu ${GEN_DIR}/model.hpp)
+    add_library(forward_pass STATIC src/forward.cu src/megakernel.cu ${GEN_DIR}/model.hpp)
     target_link_libraries(forward_pass PUBLIC weights)
 
     add_executable(forward tools/forward/main.cpp)
@@ -154,6 +154,12 @@ if(MODEL_GGUF)
   target_link_libraries(weights_test PRIVATE weights gguf_header GTest::gtest_main project_warnings)
   target_compile_definitions(weights_test PRIVATE MODEL_GGUF="${MODEL_GGUF}")
   gtest_discover_tests(weights_test)
+endif()
+
+# The megakernel against the reference pass, phase by phase. Needs the model and a GPU.
+if(TARGET forward)
+  add_test(NAME megakernel.each_phase_matches_reference
+    COMMAND forward --megakernel --check ${CMAKE_SOURCE_DIR}/tests/data/reference/planets/tokens.txt)
 endif()
 
 # The forward pass against llama.cpp's dump of the committed prompt. The dump is not in the
