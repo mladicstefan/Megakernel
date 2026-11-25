@@ -78,15 +78,26 @@ cmake -S . -B build && cmake --build build -j && ctest --test-dir build
 
 ## Working agentically
 
-Agents write the code; the user directs, reviews and commits.
+Agents write the code; the user directs, reviews pull requests and merges them.
 
 - **Subagents:** any that write, edit or review code run on `model: "opus"`. Any that
   only research or read run on `model: "sonnet"`.
-- **Commits:**
-  - In the main checkout, commit only when the user asks.
-  - A session in its own git worktree may commit on its own branch.
-  - Never merge into `master`, and never push. The user does both. The sandbox can't
-    reach the SSH key anyway.
+- **One feature, one branch, one pull request.**
+  - A feature is the smallest change that stands on its own: it builds, its tests pass,
+    and it can be explained in one paragraph. A refactor, a new kernel, a default change
+    and a doc update are four features, not one.
+  - Branch from `master`. When a feature builds on a pull request that is still open,
+    branch from that pull request's branch and use it as the base. This is a stack.
+  - Keep one commit per pull request. Fold review fixes into that commit, then restack
+    the branches above it.
+  - The commit message is the pull request's description. Title: `type(scope): subject`.
+    Body, with these headings and under 40 lines: `## Why`, `## What changed`,
+    `## Verification`. Add `## Tradeoffs` or `## Blast radius` only when a reviewer would
+    ask.
+  - Work in a git worktree, never in the main checkout.
+  - Push the feature branch and open the pull request with `gh pr create --base <base>`.
+    A session may keep building the next feature on top without waiting for review.
+  - Never push to `master` and never merge. The user does both.
 - **Two sessions never edit the same files in the same checkout.** Parallel work goes in
   separate worktrees.
 - At the end of a milestone, update `ROADMAP.md`. For phase-level changes, update
