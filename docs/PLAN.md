@@ -173,9 +173,12 @@ target has to settle.
   - Every intermediate of a step stays on the device in a `mk::Trace`. Its fields have
     the names of Phase A's dumps: 17 per layer, plus `embd`, `result_norm` and
     `result_output`.
-  - `mk::Decoder` owns the trace, the KV cache and the RoPE table. It counts the positions
-    itself, so a step cannot run out of order. `mk::Token` is an ID checked against the
-    vocabulary.
+  - `mk::Decoder<C>` owns the trace, the KV cache and the RoPE table. It counts the
+    positions itself, so a step cannot run out of order. `mk::Token` is an ID checked
+    against the vocabulary.
+  - `C` is a configuration type: the KV format, the context length and whether to round
+    as llama.cpp's CPU backend does. `EngineConfig` and `LlamaCpuConfig` are the two that
+    are built.
   - `forward <tokens.txt>` decodes greedily and prints the generated IDs. `--compare
     <dump>` checks the trace against a Phase A dump.
 - **Conventions taken from llama.cpp `b12200`, read from its source:**
@@ -237,9 +240,9 @@ target has to settle.
     one thread per matrix row. It is the oracle, not the engine's decode path.
   - BF16 matrices and F32 norm weights only: anything else fails a `static_assert`.
 - **For Phase E:**
-  - Compare the megakernel with `mk::decode()` in exact arithmetic, tensor by tensor,
-    through `mk::for_each_tensor`. `mk::decode_from()` gives the same op-by-op check
-    against any other trace.
+  - Compare the megakernel with `Decoder<EngineConfig>::decode()`, tensor by tensor,
+    through `mk::for_each_tensor`. `decode_from()` gives the same op-by-op check against
+    any other trace.
   - The RoPE table and the F16 conversions are the parts to reuse unchanged, so those
     tensors stay bit-identical.
 

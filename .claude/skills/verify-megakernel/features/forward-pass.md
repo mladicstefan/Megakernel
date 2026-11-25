@@ -21,8 +21,8 @@ exceeded. The target exists only when `MODEL_GGUF` is a `qwen3` model.
   prints `No forward pass for this architecture` and builds the engine without `forward`.
 - `fwd-errors`: bad arguments print the usage line and exit 2. An unreadable token file, an
   ID outside the vocabulary, a file without IDs, a missing or wrong-size dump tensor, a
-  wrong model file, and more positions than the model's context each print one line that
-  names the problem, and exit 1.
+  wrong model file, and more positions than the build's KV cache holds each print one line
+  that names the problem, and exit 1.
 - `fwd-memcheck`: `compute-sanitizer --tool memcheck` on `forward` reports 0 errors.
 
 ## How to get to it (user POV)
@@ -82,8 +82,8 @@ Preconditions:
     read` and `exit=1`.
   - `$F --model tests/data/toy.gguf $P/tokens.txt` gives the engine's size-mismatch line
     and `exit=1`.
-  - `$F --generate 40000 $P/tokens.txt` gives `40013 positions are more than the model's
-    context of 32768` and `exit=1`.
+  - `$F --generate 5000 $P/tokens.txt` gives `5013 positions are more than the 4096 this
+    build's KV cache holds` and `exit=1`.
 - **Memcheck.** Run `compute-sanitizer --tool memcheck $F --generate 3 $P/tokens.txt >
   $EV/memcheck.log 2>&1`. Expect `generated: [25, 362, 8]` and `ERROR SUMMARY: 0 errors`.
   It takes about 15 s.

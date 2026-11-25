@@ -42,8 +42,7 @@ What is still decided at run time, and so breaks the rule today:
 
 - The reference pass passes each matrix's address, rows and columns to its kernel as
   arguments, and walks the layers in a host loop.
-- The context length is an argument of `make_decoder`.
-- `Arithmetic` (exact, or llama.cpp's rounding) is a run-time enum.
+- The checksum kernel asks the device for its SM count.
 
 ## Targets
 
