@@ -100,6 +100,9 @@ struct Error {
     std::size_t pos;
 };
 
+// The words gguf2hpp and the engine print for a kind.
+std::string_view describe(ErrorKind kind);
+
 struct Header {
     std::uint32_t magic;
     std::uint32_t version;

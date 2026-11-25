@@ -49,3 +49,5 @@ these H2s, in order: `Sub-features`, `How to get to it (user POV)`,
   engine builds, and edits rerun the right steps.
 - [Reference dumps](./reference-dumps.md): llama.cpp's per-layer tensors and logits for a
   committed prompt, reproducible checksums, and greedy agreement with `llama-simple`.
+- [Weights upload](./weights-upload.md): the engine verifies its GGUF, uploads the tensor
+  data to the GPU, proves the copy with per-tensor checksums, and rejects any other file.

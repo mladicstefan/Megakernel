@@ -69,6 +69,43 @@ std::expected<MappedFile, Error> MappedFile::open(const char* path) {
     return file;
 }
 
+std::string_view describe(ErrorKind kind) {
+    using enum ErrorKind;
+    switch (kind) {
+    case OpenFailed:
+        return "cannot open (missing, not a regular file, or mmap failed)";
+    case Truncated:
+        return "truncated";
+    case BadMagic:
+        return "not a GGUF file (bad magic)";
+    case UnsupportedVersion:
+        return "unsupported GGUF version";
+    case UnknownValueType:
+        return "unknown metadata value type";
+    case BadBool:
+        return "bool other than 0 or 1";
+    case NestedArray:
+        return "nested array";
+    case UnknownTensorType:
+        return "unknown tensor type";
+    case TooManyDims:
+        return "more than 4 dims";
+    case BadShape:
+        return "first dim not a whole number of blocks";
+    case BadAlignment:
+        return "bad general.alignment";
+    case BadTensorExtent:
+        return "tensor data runs past the end of the file";
+    case SizeOverflow:
+        return "tensor size overflows u64";
+    case DuplicateKey:
+        return "duplicate metadata key";
+    case DuplicateTensor:
+        return "duplicate tensor name";
+    }
+    return "unknown error";
+}
+
 void Unmap::operator()(std::byte* p) const noexcept {
     munmap(p, size);
 }
