@@ -14,17 +14,19 @@ MK_HOST_DEVICE inline float bf16_to_float(std::uint16_t bits) {
     return f;
 }
 
-// f rounded to the nearest BF16 value, ties to even: ggml's ggml_compute_fp32_to_bf16,
-// widened again. llama.cpp's CPU backend does this to a vector before a BF16 dot product.
-MK_HOST_DEVICE inline float round_to_bf16(float f) {
+// The nearest BF16 value to f, ties to even: ggml's ggml_compute_fp32_to_bf16.
+MK_HOST_DEVICE inline std::uint16_t float_to_bf16(float f) {
     std::uint32_t u;
     std::memcpy(&u, &f, sizeof u);
     if ((u & 0x7fffffffu) > 0x7f800000u) {
-        u = ((u >> 16) | 64u) << 16; // NaN: made quiet, as ggml does
-    } else {
-        u = ((u + (0x7fffu + ((u >> 16) & 1u))) >> 16) << 16;
+        return static_cast<std::uint16_t>((u >> 16) | 64u); // NaN: made quiet, as ggml does
     }
-    std::memcpy(&f, &u, sizeof f);
-    return f;
+    return static_cast<std::uint16_t>((u + (0x7fffu + ((u >> 16) & 1u))) >> 16);
+}
+
+// f rounded to BF16 and widened again. llama.cpp's CPU backend does this to a vector before
+// a BF16 dot product.
+MK_HOST_DEVICE inline float round_to_bf16(float f) {
+    return bf16_to_float(float_to_bf16(f));
 }
 } // namespace mk

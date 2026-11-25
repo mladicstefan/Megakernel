@@ -1,4 +1,5 @@
 #pragma once
+#include "kv_format.hpp"
 #include "model.hpp"
 #include "weights.hpp"
 
@@ -149,10 +150,9 @@ struct Decoder {
     std::uint32_t n_past = 0; // positions decoded so far
 
     std::unique_ptr<Trace, CudaFree> trace;
-    // F16 bits, [layer][position][KV head][head_dim]. F16 as in llama.cpp: the same two
-    // bytes as BF16 with three more bits of mantissa.
-    std::unique_ptr<std::uint16_t, CudaFree> k_cache;
-    std::unique_ptr<std::uint16_t, CudaFree> v_cache;
+    // [layer][position][KV head][head_dim], in the build's cache format.
+    std::unique_ptr<Kv::Bits, CudaFree> k_cache;
+    std::unique_ptr<Kv::Bits, CudaFree> v_cache;
     std::unique_ptr<float, CudaFree>         rope;   // [position]: head_dim/2 cosines, then sines
     std::unique_ptr<float, CudaFree>         scores; // attention scratch, [query head][position]
     std::unique_ptr<Trace, CudaFree>         operands; // for decode_from; null until it is used
