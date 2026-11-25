@@ -10,8 +10,6 @@
 
 namespace mk {
 namespace {
-// One barrier after the embedding, six per layer, one after the logits.
-constexpr unsigned kBarriers = 2 + 6 * static_cast<unsigned>(n_layer);
 // About a second of spinning. A barrier that waits this long will never be met.
 constexpr unsigned kSpinLimit = 1u << 27;
 
@@ -383,8 +381,30 @@ struct Step {
     float*                scratch;  // shared memory: one value per warp
 };
 
+// The buffers of a layer that its phases pass to each other, one bit each.
+enum Buffer : unsigned {
+    kResidual = 1 << 0, // the stream entering the layer: the layer before wrote it
+    kQkv      = 1 << 1, // Qcur, Kcur, Vcur
+    kPartials = 1 << 2, // each block's part of the attention softmax
+    kKqv      = 1 << 3, // kqv_out
+    kFfnInp   = 1 << 4,
+    kSwiglu   = 1 << 5,
+    kLayerOut = 1 << 6, // l_out: the stream entering the next layer
+};
+
+// A phase is a type: what every block does between two barriers. reads and writes are
+// sets of Buffer, and run does the work for the calling thread.
+template <class P, class C>
+concept Phase = requires(const Step<C>& s) {
+    { P::reads } -> std::convertible_to<unsigned>;
+    { P::writes } -> std::convertible_to<unsigned>;
+    { P::run(s) } -> std::same_as<void>;
+};
+
 // Q, K and V of the normed residual stream.
 struct QkvPhase {
+    static constexpr unsigned reads  = kResidual;
+    static constexpr unsigned writes = kQkv;
     template <MegakernelConfig C>
     __device__ static void run(const Step<C>& s) {
         LayerTrace* const a = s.out;
@@ -400,6 +420,8 @@ struct QkvPhase {
 
 // Every block sums its part of the softmax of one KV head's query heads.
 struct AttentionPartPhase {
+    static constexpr unsigned reads  = kQkv;
+    static constexpr unsigned writes = kPartials;
     template <MegakernelConfig C>
     __device__ static void run(const Step<C>& s) {
         attention_part<C>(blockIdx.x % kKvHeads, blockIdx.x / kKvHeads, s.in,
@@ -410,6 +432,8 @@ struct AttentionPartPhase {
 
 // One block per KV head merges the parts into kqv_out.
 struct AttentionMergePhase {
+    static constexpr unsigned reads  = kPartials;
+    static constexpr unsigned writes = kKqv;
     template <MegakernelConfig C>
     __device__ static void run(const Step<C>& s) {
         if (blockIdx.x < kKvHeads) {
@@ -420,6 +444,8 @@ struct AttentionMergePhase {
 
 // The output projection, added to the residual stream.
 struct OutputPhase {
+    static constexpr unsigned reads  = kKqv | kResidual;
+    static constexpr unsigned writes = kFfnInp;
     template <MegakernelConfig C>
     __device__ static void run(const Step<C>& s) {
         LayerTrace* const  a = s.out;
@@ -432,6 +458,8 @@ struct OutputPhase {
 
 // Gate and up of the normed stream, through SwiGLU. A warp does both rows.
 struct FfnPhase {
+    static constexpr unsigned reads  = kFfnInp;
+    static constexpr unsigned writes = kSwiglu;
     template <MegakernelConfig C>
     __device__ static void run(const Step<C>& s) {
         load_normed<C>(s.in->ffn_inp, f32_at(s.base, s.w->ffn_norm), kEmbd, s.xs, s.scratch);
@@ -450,6 +478,8 @@ struct FfnPhase {
 
 // Down, added to the residual stream.
 struct DownPhase {
+    static constexpr unsigned reads  = kSwiglu | kFfnInp;
+    static constexpr unsigned writes = kLayerOut;
     template <MegakernelConfig C>
     __device__ static void run(const Step<C>& s) {
         LayerTrace* const       a = s.out;
@@ -460,6 +490,42 @@ struct DownPhase {
         });
     }
 };
+
+template <class... Ps>
+struct PhaseList {
+    static constexpr unsigned count = sizeof...(Ps);
+};
+
+// The schedule of one layer: its phases, in the order every block runs them. To swap a
+// phase, or to reorder, change this list.
+using LayerPhases = PhaseList<QkvPhase, AttentionPartPhase, AttentionMergePhase, OutputPhase,
+                              FfnPhase, DownPhase>;
+
+// A barrier ends every phase, so a phase may read only what an earlier phase of the layer
+// wrote, or the stream that entered the layer. This is that rule, plus one writer per
+// buffer, plus a layer that does write its output.
+template <class... Ps>
+constexpr bool well_ordered(PhaseList<Ps...>) {
+    unsigned written = kResidual;
+    bool     ok      = true;
+    ((ok = ok && (Ps::reads & ~written) == 0 && (Ps::writes & written) == 0,
+      written |= Ps::writes),
+     ...);
+    return ok && (written & kLayerOut) != 0;
+}
+static_assert(well_ordered(LayerPhases{}),
+              "a phase reads a buffer no earlier phase wrote, or two phases write one buffer");
+
+// One barrier after the embedding, one after each phase of each layer, one after the logits.
+constexpr unsigned kBarriers = 2 + LayerPhases::count * static_cast<unsigned>(n_layer);
+
+// Runs the phases of one layer, with a barrier after each.
+template <MegakernelConfig C, class... Ps>
+    requires(Phase<Ps, C> && ...)
+__device__ void run_layer(const Step<C>& s, MegaSync<C>* sync, unsigned& arrived,
+                          PhaseList<Ps...>) {
+    ((Ps::run(s), barrier<C>(sync, arrived += Grid<C>::blocks)), ...);
+}
 
 // One decode step. out is the trace the phases write, in the trace they read: the same one
 // in a normal step. The launch bounds make the compiler fit the grid's blocks on one SM.
@@ -494,18 +560,7 @@ megakernel(Weights weights, Trace* out, const Trace* in, typename C::Kv::Bits* k
         const Step<C>     s{base,     &offsets.layer[l], &in->layers[l], &out->layers[l],
                             x,        k_cache + cache,   v_cache + cache, rope,
                             pos,      partials,          xs,              scratch};
-        QkvPhase::run(s);
-        barrier<C>(sync, arrived += kBlocks);
-        AttentionPartPhase::run(s);
-        barrier<C>(sync, arrived += kBlocks);
-        AttentionMergePhase::run(s);
-        barrier<C>(sync, arrived += kBlocks);
-        OutputPhase::run(s);
-        barrier<C>(sync, arrived += kBlocks);
-        FfnPhase::run(s);
-        barrier<C>(sync, arrived += kBlocks);
-        DownPhase::run(s);
-        barrier<C>(sync, arrived += kBlocks);
+        run_layer(s, sync, arrived, LayerPhases{});
         x = in->layers[l].l_out;
     }
 
