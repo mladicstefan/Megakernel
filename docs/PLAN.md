@@ -157,34 +157,83 @@ Achieved bandwidth is usually 80–90 % of nominal, so a realistic goal is about
   - The checksum reads whole 8-byte words. A model with a tensor that is not a whole
     number of them fails a `static_assert` in `weights.hpp`.
 
-### C. Reference CUDA forward pass
+### C. Reference CUDA forward pass (done 2026-11-25)
 
-- **Builds:** one plain, readable kernel per op, with FP32 accumulation and BF16 weights.
-  The ops:
-  1. embedding row
-  2. RMSNorm
-  3. Q, K, V projections (matrix-vector products)
-  4. q_norm and k_norm per head
-  5. RoPE
-  6. writing to the KV cache
-  7. grouped-query attention over the cache
-  8. the output projection
-  9. residual add
-  10. RMSNorm
-  11. gate and up projections, SiLU × up, down projection
-  12. residual add
-  13. the final norm
-  14. the LM head
+- **Built:** `src/forward.{hpp,cu}` and the `forward` tool (`tools/forward/main.cpp`).
+  They exist only when `MODEL_GGUF` is a `qwen3` model.
+  - One plain kernel per op, in FP32 over the BF16 weights: the embedding row, RMSNorm,
+    the matrix-vector product, RoPE, the KV cache write, grouped-query attention, the
+    residual add and SwiGLU. `decode()` launches them in the order of llama.cpp's qwen3
+    graph.
+  - Every intermediate of a step stays on the device in a `mk::Trace`. Its fields have
+    the names of Phase A's dumps: 17 per layer, plus `embd`, `result_norm` and
+    `result_output`.
+  - `mk::Decoder` owns the trace, the KV cache and the RoPE table. It counts the positions
+    itself, so a step cannot run out of order. `mk::Token` is an ID checked against the
+    vocabulary.
+  - `forward <tokens.txt>` decodes greedily and prints the generated IDs. `--compare
+    <dump>` checks the trace against a Phase A dump.
+- **Conventions taken from llama.cpp `b12200`, read from its source:**
+  - RoPE pairs element `i` with `i + 64` (the NEOX type). The angle for pair `i` is the
+    position times `1e6^(-i/64)`, built by repeated F32 multiplication. The table is
+    computed on the host with the same steps, and RoPE matches llama.cpp bit for bit.
+  - Query head `h` reads KV head `h / 2`.
+  - Attention scores are scaled by `1/sqrt(128)`. Attention at a position includes that
+    position's own K and V, read back from the cache.
+  - RMSNorm multiplies by `1/sqrt(mean(x^2) + 1e-6)`, then by the weight. `q_norm` and
+    `k_norm` apply per head, with one weight of 128 shared by the heads.
+- **The KV cache is F16, not BF16.** It is the same 2 bytes per value, so the ceiling
+  table above does not change. F16 keeps 3 more bits of mantissa, and it is what
+  llama.cpp reads, so the comparison does not include a cache-format difference.
+- **Proof (measured, prompt `planets`, 14 tokens, 32 generated):**
+  - The 32 greedy tokens equal `greedy.txt`. The top-1 token equals llama.cpp's at all 45
+    positions.
+  - Two ways of comparing with Phase A's dump: the 6,692 tensors of the 14 prompt
+    positions, and the logits.
+
+    | Comparison | Worst rel L2 | Worst 1-cosine | Worst KL (nats) |
+    |---|---|---|---|
+    | as it runs, exact arithmetic | 1.5e-2 (`attn_out`, `ffn_out`) | 1.1e-4 | 1.5e-4 |
+    | each op on the dump's operands, llama.cpp's rounding reproduced | 1.05e-4 (`kqv_out`); every other tensor below 3e-6 | 5.4e-9 | 4.2e-11 |
+
+  - `embd`, both RoPE outputs and both residual adds are bit-identical to llama.cpp's
+    in the second comparison.
+  - Six deliberate bugs, each in a scratch copy: a flipped RoPE sign, KV head `h % 8`, a
+    norm epsilon of 1e-5, a score scale of 1/128, SwiGLU with gate and up swapped, and
+    caching K before RoPE. The op-by-op comparison failed on all six and named the op.
+    The comparison as it runs failed on five and passed the epsilon bug.
+  - `compute-sanitizer --tool memcheck` reports 0 errors. Two runs print identical
+    results.
+- **Why the two comparisons differ by a factor of 100.** llama.cpp's CPU backend is not
+  an exact reference for BF16 weights:
+  - Before every BF16 matrix product it rounds the input vector to BF16, which keeps 8
+    significant bits. One product on llama.cpp's own operands differs from the exact
+    result by up to 5.6e-3 (rel L2, measured). With the rounding reproduced, the same
+    product differs by less than 1e-6.
+  - Its flash attention rounds Q to F16 and keeps the running weighted sum in F16.
+  - A difference of one F32 ulp can flip one of those roundings, so the differences grow
+    with depth until they reach the rounding's own size, about 1e-2. That happens even
+    when both sides round the same way.
   
-  This is the correctness oracle for E, so clarity wins over speed.
-- **Proof:**
-  - Per layer and per position, compare each intermediate with A's dump: max absolute
-    and relative error, plus cosine similarity.
-  - Logits: the top-1 token agrees, and the KL divergence is reported.
-  - Greedy decode of N tokens (N = 32 to start) matches llama.cpp. Record the first
-    divergence, if any, and explain it.
-- **Open questions:** the tolerances. Propose cosine similarity ≥ 0.999 per tensor and an
-  exact top-1 match, then tighten them after the first measurements.
+  So the comparison as it runs cannot see a bug smaller than about 1e-2, and the
+  op-by-op comparison is the one that judges an op. `kqv_out` stays at 1e-4 there because
+  attention's F16 sum still flips on F32-ulp differences in the weights.
+- **Open question, answered: the tolerances.** A few times the measured worst values:
+  - as it runs: rel L2 5e-2, cosine at least 0.999 as proposed, KL 1e-3, top-1 equal
+  - op by op: rel L2 5e-4, 1-cosine 1e-7, KL 1e-9
+- **Limits:**
+  - One prompt. Top-1 agreement is not guaranteed on another: the largest logit
+    difference (0.16) is above the smallest gap between llama.cpp's best two tokens
+    (0.13).
+  - The pass takes 32 ms per step (measured, 269 steps). It reads 1.19 GB per step with
+    one thread per matrix row. It is the oracle, not the engine's decode path.
+  - BF16 matrices and F32 norm weights only: anything else fails a `static_assert`.
+- **For Phase E:**
+  - Compare the megakernel with `mk::decode()` in exact arithmetic, tensor by tensor,
+    through `mk::for_each_tensor`. `mk::decode_from()` gives the same op-by-op check
+    against any other trace.
+  - The RoPE table and the F16 conversions are the parts to reuse unchanged, so those
+    tensors stay bit-identical.
 
 ### D. Compile-time plan
 
@@ -233,6 +282,11 @@ Achieved bandwidth is usually 80–90 % of nominal, so a realistic goal is about
   - achieved DRAM bandwidth
   - the limiting factor named for each gap
   - a comparison with llama.cpp CUDA on the same GPU
+- **Baseline, measured early (2026-11-25):** llama.cpp `b12200` with its CUDA backend,
+  all layers on the GPU, `llama-bench -p 0 -n 128 -r 5` on the Qwen BF16 file: 381
+  tokens/s (three runs: 380.9, 381.5, 381.3), and 369 tokens/s at 1,024 tokens. That is
+  2.62 ms per token. At the 623 GB/s the Phase B kernel reads, one step's 1.19 GB takes
+  1.91 ms, or about 520 tokens/s (estimated). What limits llama.cpp was not profiled.
 
 ## Parallel tracks
 
@@ -266,3 +320,4 @@ Each phase follows the same loop:
 | 2026-11-25 | First target: decode, batch size 1, Qwen3-0.6B BF16, 4070 Ti SUPER. Reference: llama.cpp. No "mode A / mode B". The project is agentic from here on. |
 | 2026-11-25 | Phase A: llama.cpp `b12200` (2026-11-07), CPU only, 8 threads (dumps are identical at 1 to 16), F16 KV cache and flash attention as llama.cpp's defaults. Dumps in `~/.cache/megakernel/reference/`, fixtures in `tests/data/reference/`. Greedy oracle: `llama-simple` (a plain greedy sampler), its text re-tokenized to IDs. |
 | 2026-11-25 | Phase B: the weights go to the GPU with a plain `cudaMemcpy` from the mmap, `token_embd` included. Pinned staging was within 3% and this GPU cannot register a read-only mapping. Kernels are handed `mk::Weights`. |
+| 2026-11-25 | Phase C: the KV cache is F16, not BF16: the same size, 3 more bits, and what llama.cpp reads. The reference pass is judged op by op on llama.cpp's operands with its CPU rounding reproduced, because llama.cpp rounds activations to BF16 and that hides bugs below about 1e-2. |

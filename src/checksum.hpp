@@ -1,4 +1,6 @@
 #pragma once
+#include "host_device.hpp"
+
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -8,11 +10,6 @@
 // The checksum that proves a tensor's bytes on the device equal its bytes in the file. The
 // host computes it over the mapping and a kernel over device memory, both from
 // checksum_term. nvcc compiles this header: C++20 only.
-#ifdef __CUDACC__
-#define MK_HOST_DEVICE __host__ __device__
-#else
-#define MK_HOST_DEVICE
-#endif
 
 namespace mk {
 // What the 8-byte word at position index adds to a checksum. The position goes through the
