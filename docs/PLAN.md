@@ -27,7 +27,7 @@ Decode at batch size 1 is limited by memory bandwidth. Per token, it reads:
 - all weights except the embedding table: 1,192,230,912 bytes (file size minus
   `data_start` minus `token_embd.weight`, padding included), plus one 2 KB embedding row
 - the KV cache: 28 layers × 2 (K and V) × 8 heads × 128 × 2 bytes = 114,688 bytes per
-  token of context, in BF16
+  token of context, in a 16-bit format
 
 | Context position | Bytes per step | At 672 GB/s | tokens/s |
 |---|---|---|---|
@@ -39,6 +39,11 @@ Achieved bandwidth is usually 80–90 % of nominal, so a realistic goal is about
 450–500 tokens/s at short context. Phase F replaces these estimates with measurements.
 
 ## Phases
+
+**Changed on 2026-11-25:** phases A, B and C are done. D, E and F are no longer separate
+steps. `ROADMAP.md` replaces them with one target, the megakernel, that carries its own
+design, proof and measurements. Their sections below are kept as the list of what that
+target has to settle.
 
 | Phase | Builds | Proof that it's done | Depends on |
 |---|---|---|---|
@@ -182,9 +187,12 @@ Achieved bandwidth is usually 80–90 % of nominal, so a realistic goal is about
     position's own K and V, read back from the cache.
   - RMSNorm multiplies by `1/sqrt(mean(x^2) + 1e-6)`, then by the weight. `q_norm` and
     `k_norm` apply per head, with one weight of 128 shared by the heads.
-- **The KV cache is F16, not BF16.** It is the same 2 bytes per value, so the ceiling
-  table above does not change. F16 keeps 3 more bits of mantissa, and it is what
-  llama.cpp reads, so the comparison does not include a cache-format difference.
+- **The KV cache format is a compile-time type**, `mk::Kv` in `src/kv_format.hpp`. A
+  format has `Bits`, `store()` and `load()`, and the cache kernels are templates over it.
+  F16, BF16 and F32 exist. All three generate llama.cpp's 32 tokens on `planets`
+  (measured, as it runs): the worst attention difference is 1.4e-2 with F16 or F32 and
+  2.7e-2 with BF16. The build uses F16, because llama.cpp's dump was made with an F16
+  cache and the op-by-op comparison needs the same one.
 - **Proof (measured, prompt `planets`, 14 tokens, 32 generated):**
   - The 32 greedy tokens equal `greedy.txt`. The top-1 token equals llama.cpp's at all 45
     positions.
@@ -320,4 +328,5 @@ Each phase follows the same loop:
 | 2026-11-25 | First target: decode, batch size 1, Qwen3-0.6B BF16, 4070 Ti SUPER. Reference: llama.cpp. No "mode A / mode B". The project is agentic from here on. |
 | 2026-11-25 | Phase A: llama.cpp `b12200` (2026-11-07), CPU only, 8 threads (dumps are identical at 1 to 16), F16 KV cache and flash attention as llama.cpp's defaults. Dumps in `~/.cache/megakernel/reference/`, fixtures in `tests/data/reference/`. Greedy oracle: `llama-simple` (a plain greedy sampler), its text re-tokenized to IDs. |
 | 2026-11-25 | Phase B: the weights go to the GPU with a plain `cudaMemcpy` from the mmap, `token_embd` included. Pinned staging was within 3% and this GPU cannot register a read-only mapping. Kernels are handed `mk::Weights`. |
-| 2026-11-25 | Phase C: the KV cache is F16, not BF16: the same size, 3 more bits, and what llama.cpp reads. The reference pass is judged op by op on llama.cpp's operands with its CPU rounding reproduced, because llama.cpp rounds activations to BF16 and that hides bugs below about 1e-2. |
+| 2026-11-25 | Phase C: the reference pass is judged op by op on llama.cpp's operands with its CPU rounding reproduced, because llama.cpp rounds activations to BF16 and that hides bugs below about 1e-2. |
+| 2026-11-25 | The engine is compile time only: every choice the model or the build fixes is a type or a constant. The KV cache format is the type `mk::Kv`, not a fixed F16. The plan no longer advances phase by phase: `ROADMAP.md` lists three targets that each end production-ready. |
