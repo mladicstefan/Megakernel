@@ -24,11 +24,14 @@ struct VerifiedFile {
         return file.bytes().subspan(model::data_start).first<mk::weights_size>();
     }
 
-    // The error is the message, without the path.
+    // The error is the message, without the path. A reader error reads as gguf2hpp prints it.
     static std::expected<VerifiedFile, std::string> open(const char* path) {
+        const auto reader_error = [](gguf::Error e) {
+            return std::unexpected(std::format("{} at byte {}", gguf::describe(e.kind), e.pos));
+        };
         auto file = gguf::MappedFile::open(path);
         if (!file) {
-            return std::unexpected(std::string(gguf::describe(file.error().kind)));
+            return reader_error(file.error());
         }
         // Size before parse: a cut-off copy is a file of the wrong size, whatever parse
         // would say about it.
@@ -40,9 +43,7 @@ struct VerifiedFile {
         }
         const auto parsed = gguf::parse(file->bytes());
         if (!parsed) {
-            return std::unexpected(std::format("{} at byte {}",
-                                               gguf::describe(parsed.error().kind),
-                                               parsed.error().pos));
+            return reader_error(parsed.error());
         }
         if (parsed->hash != model::hash) {
             return std::unexpected(std::format(
