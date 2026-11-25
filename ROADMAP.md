@@ -26,7 +26,7 @@ branch.
 | llama.cpp reference dumps (Phase A) | `tools/reference/` | byte-identical reruns; greedy tokens equal `llama-simple` |
 | Weights on the GPU (Phase B) | `src/weights.{hpp,cu}`, `src/verified_file.hpp` | 311 of 311 device checksums match the file; a wrong file is rejected |
 | Reference forward pass (Phase C) | `src/forward.{hpp,cu}`, `tools/forward/` | 32 greedy tokens equal llama.cpp's; every op within 1e-4 of its dump |
-| KV cache format as a type | `src/kv_format.hpp` | F16, BF16 and F32 builds all generate llama.cpp's 32 tokens |
+| KV cache format as a type, BF16 for the engine | `src/kv_format.hpp`, `EngineConfig` | F16, BF16 and F32 all generate llama.cpp's 32 tokens |
 
 Measured on the RTX 4070 Ti SUPER (details in `docs/PLAN.md`):
 

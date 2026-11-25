@@ -147,9 +147,9 @@ concept DecoderConfig = KvFormat<typename C::Kv> && requires {
     { C::llama_cpu_rounding } -> std::convertible_to<bool>;
 };
 
-// The engine's own choices: FP32 arithmetic throughout.
+// The engine's own choices: FP32 arithmetic throughout, and a BF16 cache like the weights.
 struct EngineConfig {
-    using Kv = KvF16;
+    using Kv = KvBF16;
     // The roadmap measures up to 4,096 positions. The model allows 32,768, which would be
     // 3.8 GB of cache.
     static constexpr std::uint32_t n_ctx              = 4096;
