@@ -1,5 +1,6 @@
 #include "compare.hpp"
 #include "forward.hpp"
+#include "megakernel.hpp"
 #include "verified_file.hpp"
 
 #include <algorithm>
@@ -30,9 +31,12 @@
 // - with --per-op, each op on llama.cpp's operands and with its rounding. An op then differs
 //   from llama.cpp only in the order of its sums, so the limits are tight.
 namespace {
+// With --megakernel the megakernel decodes instead. --check then runs the reference pass next
+// to it and compares every phase of the megakernel on the reference's operands.
 constexpr std::string_view kUsage =
     "usage: forward [--model <gguf>] [--generate <n>] [--compare <dump-dir> [--per-op]] "
-    "<tokens.txt>";
+    "<tokens.txt>\n"
+    "       forward [--model <gguf>] [--generate <n>] --megakernel [--check] <tokens.txt>";
 
 // The limits a comparison must stay inside: a few times the worst value measured on the
 // planets prompt (docs/PLAN.md, Phase C).
@@ -46,13 +50,19 @@ struct Tolerance {
 constexpr Tolerance kPerOpTolerance{.rel_l2 = 5e-4, .one_minus_cos = 1e-7, .kl = 1e-9};
 // Measured worst, with the engine's BF16 cache: rel L2 3.0e-2, 1-cosine 3.7e-4, KL 3.0e-4.
 constexpr Tolerance kExactTolerance{.rel_l2 = 5e-2, .one_minus_cos = 1e-3, .kl = 1e-3};
+// The megakernel against the reference pass, phase by phase: only the order of sums
+// differs. Measured worst: rel L2 3.9e-4 (kqv_out, where a different sum can flip a BF16
+// rounding in the cache; every other tensor is below 6e-6), 1-cosine 7.7e-8, KL 7.3e-11.
+constexpr Tolerance kMegakernelTolerance{.rel_l2 = 2e-3, .one_minus_cos = 5e-7, .kl = 1e-9};
 
 struct Options {
     std::string                          model = MODEL_GGUF;
     std::string                          tokens;
     std::optional<std::filesystem::path> compare;
-    std::size_t                          generate = 32;
-    bool                                 per_op   = false;
+    std::size_t                          generate   = 32;
+    bool                                 per_op     = false;
+    bool                                 megakernel = false;
+    bool                                 check      = false;
 };
 
 std::optional<Options> parse_args(std::span<char*> args) {
@@ -61,6 +71,10 @@ std::optional<Options> parse_args(std::span<char*> args) {
         const std::string_view a = args[i];
         if (a == "--per-op") {
             o.per_op = true;
+        } else if (a == "--megakernel") {
+            o.megakernel = true;
+        } else if (a == "--check") {
+            o.check = true;
         } else if (a == "--model" || a == "--compare" || a == "--generate") {
             if (i + 1 == args.size()) {
                 return std::nullopt;
@@ -80,7 +94,8 @@ std::optional<Options> parse_args(std::span<char*> args) {
             return std::nullopt;
         }
     }
-    if (o.tokens.empty() || (o.per_op && !o.compare)) {
+    if (o.tokens.empty() || (o.per_op && !o.compare) || (o.check && !o.megakernel) ||
+        (o.megakernel && o.compare)) {
         return std::nullopt;
     }
     return o;
@@ -211,6 +226,161 @@ int fail(const mk::CudaError& e) {
     return fail(std::format("{}: {}", e.call, e.text));
 }
 
+std::string text(const mk::CudaError& e) {
+    return std::format("{}: {}", e.call, e.text);
+}
+
+// The model's weights on the device, after the file passed the engine's checks. The
+// mapping is closed again: the device copy is all a decoder reads.
+std::expected<mk::DeviceWeights, std::string> load_weights(const std::string& model) {
+    const auto file = mk::VerifiedFile::open(model.c_str());
+    if (!file) {
+        return std::unexpected(std::format("{}: {}", model, file.error()));
+    }
+    auto uploaded = mk::upload(file->weights());
+    if (const auto* e = std::get_if<mk::CudaError>(&uploaded)) {
+        return std::unexpected(text(*e));
+    }
+    return std::move(std::get<mk::Upload>(uploaded).weights);
+}
+
+void print_generated(const std::vector<mk::Token>& generated) {
+    std::print("generated: [");
+    for (std::size_t i = 0; i < generated.size(); ++i) {
+        std::print("{}{}", i ? ", " : "", generated[i].id);
+    }
+    std::println("]");
+}
+
+// The megakernel decodes. With --check, the reference pass decodes the same tokens first
+// and the megakernel runs each phase on the reference's operands.
+int run_megakernel(const Options& o, const std::vector<mk::Token>* prompt) {
+    using C = mk::EngineConfig;
+    const std::size_t steps = prompt->size() + (o.generate > 0 ? o.generate - 1 : 0);
+    if (steps > C::n_ctx) {
+        return fail(std::format("{} positions are more than the {} this build's KV cache holds",
+                                steps, C::n_ctx));
+    }
+    const auto sms = mk::device_sms();
+    if (const auto* e = std::get_if<mk::CudaError>(&sms)) {
+        return fail(*e);
+    }
+    if (std::get<unsigned>(sms) != mk::BuildGpu::sms) {
+        return fail(std::format("built for the {} ({} SMs), this GPU has {} SMs",
+                                mk::BuildGpu::name, mk::BuildGpu::sms, std::get<unsigned>(sms)));
+    }
+    const auto weights = load_weights(o.model);
+    if (!weights) {
+        return fail(weights.error());
+    }
+    auto made_decoder   = mk::Decoder<C>::make(weights->view());
+    auto made_reference = mk::Decoder<C>::make(weights->view());
+    auto made_kernel    = mk::Megakernel<C>::make();
+    for (const auto* e : {std::get_if<mk::CudaError>(&made_decoder),
+                          std::get_if<mk::CudaError>(&made_reference)}) {
+        if (e != nullptr) {
+            return fail(*e);
+        }
+    }
+    if (const auto* e = std::get_if<mk::CudaError>(&made_kernel)) {
+        return fail(*e);
+    }
+    auto& decoder   = std::get<mk::Decoder<C>>(made_decoder);
+    auto& reference = std::get<mk::Decoder<C>>(made_reference);
+    auto& kernel    = std::get<mk::Megakernel<C>>(made_kernel);
+
+    std::println("forward: {} prompt tokens, {} to generate, megakernel{}", prompt->size(),
+                 o.generate, o.check ? ", each phase on the reference pass's operands" : "");
+
+    // The tensors the megakernel writes. It fuses the others away.
+    constexpr std::string_view kMaterialized[] = {"embd",    "Qcur",    "Kcur",       "Vcur",
+                                                  "kqv_out", "ffn_inp", "ffn_swiglu", "l_out"};
+    const auto                 ours = std::make_unique<mk::Trace>();
+    const auto                 ref  = std::make_unique<mk::Trace>();
+    std::vector<mk::Token>     generated;
+    Table                      table;
+    std::size_t                top1_agree = 0;
+    double                     max_kl = 0, seconds = 0;
+
+    mk::Token token = prompt->front();
+    for (std::size_t pos = 0; pos < steps; ++pos) {
+        if (pos < prompt->size()) {
+            token = (*prompt)[pos];
+        }
+        if (o.check) {
+            if (const auto e = reference.decode(token)) {
+                return fail(*e);
+            }
+            if (const auto e = reference.read_trace(*ref)) {
+                return fail(*e);
+            }
+        }
+        const auto start = std::chrono::steady_clock::now();
+        const auto next  = o.check ? kernel.decode_from(decoder, token, *ref)
+                                   : kernel.decode(decoder, token);
+        seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        if (const auto* e = std::get_if<mk::CudaError>(&next)) {
+            return fail(*e);
+        }
+        token = std::get<mk::Token>(next);
+
+        if (o.check) {
+            if (const auto e = decoder.read_trace(*ours)) {
+                return fail(*e);
+            }
+            std::vector<std::span<const float>> theirs;
+            mk::for_each_tensor(std::as_const(*ref),
+                                [&](int, std::string_view, std::span<const float> values) {
+                                    theirs.push_back(values);
+                                });
+            std::size_t at = 0;
+            mk::for_each_tensor(std::as_const(*ours), [&](int layer, std::string_view name,
+                                                          std::span<const float> values) {
+                if (std::ranges::contains(kMaterialized, name)) {
+                    table.add(pos, layer, name, values, theirs[at]);
+                }
+                ++at;
+            });
+            const std::span<const float> ref_logits = ref->result_output;
+            table.add(pos, -1, "result_output", ours->result_output, ref_logits);
+            max_kl = std::max(max_kl, mk::kl_divergence(ref_logits, ours->result_output));
+            // The megakernel's own argmax, against the reference's logits.
+            const mk::Token expected = *mk::Token::checked(mk::argmax(ref_logits));
+            top1_agree += token.id == expected.id;
+            token = expected; // both keep decoding the reference's chain
+        }
+        if (pos + 1 >= prompt->size() && generated.size() < o.generate) {
+            generated.push_back(token);
+        }
+    }
+
+    print_generated(generated);
+    std::println("decode: {} steps in {:.3f} s, {:.3f} ms per step, {:.0f} tokens/s", steps,
+                 seconds, seconds * 1e3 / static_cast<double>(steps),
+                 static_cast<double>(steps) / seconds);
+    if (!o.check) {
+        return 0;
+    }
+
+    bool ok = top1_agree == steps && max_kl <= kMegakernelTolerance.kl;
+    std::println("check: against the reference pass");
+    std::println("  {:<14} {:>7} {:>10} {:>10} {:>10}  {}", "tensor", "tensors", "max abs", "rel L2",
+                 "1-cosine", "worst rel L2 at");
+    for (const Row& r : table.rows) {
+        std::println("  {:<14} {:>7} {:>10.2e} {:>10.2e} {:>10.2e}  {}", r.name, r.tensors,
+                     r.max_abs, r.rel_l2, 1 - r.cosine, r.worst);
+        ok = ok && r.rel_l2 <= kMegakernelTolerance.rel_l2 &&
+             1 - r.cosine <= kMegakernelTolerance.one_minus_cos;
+    }
+    std::println("logits: the megakernel's token is the reference's at {} of {} positions, "
+                 "largest KL {:.2e} nats",
+                 top1_agree, steps, max_kl);
+    std::println("result: {} (limits: rel L2 {:.0e}, 1-cosine {:.0e}, KL {:.0e}, token equal)",
+                 ok ? "within tolerance" : "OUTSIDE TOLERANCE", kMegakernelTolerance.rel_l2,
+                 kMegakernelTolerance.one_minus_cos, kMegakernelTolerance.kl);
+    return ok ? 0 : 1;
+}
+
 // Decodes with the decoder that is compiled for configuration C.
 template <mk::DecoderConfig C>
 int run(const Options& o, const std::vector<mk::Token>* prompt) {
@@ -223,15 +393,11 @@ int run(const Options& o, const std::vector<mk::Token>* prompt) {
                                 steps, C::n_ctx));
     }
 
-    const auto file = mk::VerifiedFile::open(o.model.c_str());
-    if (!file) {
-        return fail(std::format("{}: {}", o.model, file.error()));
+    const auto weights = load_weights(o.model);
+    if (!weights) {
+        return fail(weights.error());
     }
-    const auto uploaded = mk::upload(file->weights());
-    if (const auto* e = std::get_if<mk::CudaError>(&uploaded)) {
-        return fail(*e);
-    }
-    auto made = mk::Decoder<C>::make(std::get<mk::Upload>(uploaded).weights.view());
+    auto made = mk::Decoder<C>::make(weights->view());
     if (const auto* e = std::get_if<mk::CudaError>(&made)) {
         return fail(*e);
     }
@@ -304,11 +470,7 @@ int run(const Options& o, const std::vector<mk::Token>* prompt) {
         }
     }
 
-    std::print("generated: [");
-    for (std::size_t i = 0; i < generated.size(); ++i) {
-        std::print("{}{}", i ? ", " : "", generated[i].id);
-    }
-    std::println("]");
+    print_generated(generated);
     std::println("decode: {} steps in {:.3f} s, {:.1f} ms per step", steps, decode_seconds,
                  decode_seconds * 1e3 / static_cast<double>(steps));
     if (!o.compare) {
@@ -346,6 +508,9 @@ int main(int argc, char** argv) {
     const auto prompt = read_tokens(options->tokens);
     if (!prompt) {
         return fail(std::format("{}: {}", options->tokens, prompt.error()));
+    }
+    if (options->megakernel) {
+        return run_megakernel(*options, &*prompt);
     }
     return options->per_op ? run<mk::LlamaCpuConfig>(*options, &*prompt)
                            : run<mk::EngineConfig>(*options, &*prompt);

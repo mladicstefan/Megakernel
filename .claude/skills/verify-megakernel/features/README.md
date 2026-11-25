@@ -53,3 +53,5 @@ these H2s, in order: `Sub-features`, `How to get to it (user POV)`,
   data to the GPU, proves the copy with per-tensor checksums, and rejects any other file.
 - [Forward pass](./forward-pass.md): the reference CUDA forward pass decodes token IDs,
   matches llama.cpp's greedy tokens, and is compared with its dump tensor by tensor.
+- [Megakernel](./megakernel.md): one kernel launch per decode step, checked phase by phase
+  against the reference pass, with its tokens per second.

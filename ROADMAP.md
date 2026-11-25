@@ -54,6 +54,23 @@ together.
 One persistent CUDA kernel runs a whole decode step, with its schedule computed at compile
 time.
 
+**State on 2026-11-25:** a first megakernel exists (`src/megakernel.{hpp,cu}`). One launch
+runs a step as 142 phases with grid-wide barriers between them. Every phase matches the
+reference pass within 4e-4, and the three sanitizers are clean. Measured with
+`forward --megakernel` on the `planets` prompt:
+
+| Positions decoded | ms per step | tokens/s |
+|---|---|---|
+| 45 | 2.56 | 391 |
+| 141 | 3.11 | 322 |
+| 1,037 | 8.15 | 123 |
+| 4,013 | 24.8 | 40 |
+
+It is not at the bar yet. Attention runs one block per head and walks the cached positions
+one after another, so its time grows with the context. Still open from the list below:
+the configuration type, ops over compile-time tensors, a checked constexpr schedule, the
+watchdog test, and `engine <tokens.txt>`.
+
 - **Configuration is a type.** One `struct` names the build's choices: the KV format, the
   GPU, the context length. The kernel is a template over it. `model.hpp` supplies the rest.
 - **Ops are templates over what they read.** A matrix-vector product takes its tensor as a
