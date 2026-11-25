@@ -11,7 +11,7 @@
 
 // How the KV cache stores one value. A format is a type: Bits is what a cache slot holds,
 // store() rounds a float into it and load() widens it again. Kernels are templates over the
-// format, and a build names its format once, as mk::Kv. nvcc compiles this header: C++20.
+// format, and a configuration names one as its Kv. nvcc compiles this header: C++20.
 namespace mk {
 template <class F>
 concept KvFormat = requires(float value, typename F::Bits bits) {
@@ -39,7 +39,7 @@ struct KvBF16 {
     }
 };
 
-// IEEE half precision, through the GPU's own conversions. Device code only.
+// IEEE half precision, through the GPU's own conversions.
 struct KvF16 {
     using Bits = std::uint16_t;
 #ifdef __CUDACC__
@@ -49,10 +49,11 @@ struct KvF16 {
     __device__ static float load(Bits bits) {
         return __half2float(__ushort_as_half(bits));
     }
+#else
+    // Host code can name the conversions, so the type is a KvFormat there too, but only
+    // device code can call them.
+    static Bits  store(float value);
+    static float load(Bits bits);
 #endif
 };
-
-// The format this build's KV cache has. F16 is what llama.cpp's cache holds, so the
-// comparisons with its dumps are made with this one.
-using Kv = KvF16;
 } // namespace mk

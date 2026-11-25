@@ -3,6 +3,7 @@
 #include "model.hpp"
 #include "weights.hpp"
 
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -136,41 +137,65 @@ struct Token {
     }
 };
 
-enum class Arithmetic {
-    exact,     // FP32 throughout. What the megakernel is checked against.
-    llama_cpu, // also rounds where llama.cpp's CPU backend rounds, to compare with its dumps
+// What a decoder is compiled for. A configuration is a type with:
+// - Kv, the KV cache's format
+// - n_ctx, the positions the KV cache holds
+// - llama_cpu_rounding, whether the ops also round where llama.cpp's CPU backend rounds
+template <class C>
+concept DecoderConfig = KvFormat<typename C::Kv> && requires {
+    { C::n_ctx } -> std::convertible_to<std::uint32_t>;
+    { C::llama_cpu_rounding } -> std::convertible_to<bool>;
+};
+
+// The engine's own choices: FP32 arithmetic throughout.
+struct EngineConfig {
+    using Kv = KvF16;
+    // The roadmap measures up to 4,096 positions. The model allows 32,768, which would be
+    // 3.8 GB of cache.
+    static constexpr std::uint32_t n_ctx              = 4096;
+    static constexpr bool          llama_cpu_rounding = false;
+};
+
+// llama.cpp's CPU backend, reproduced: its F16 cache and its rounding. For the op-by-op
+// comparison with its dumps.
+struct LlamaCpuConfig {
+    using Kv = KvF16;
+    static constexpr std::uint32_t n_ctx              = EngineConfig::n_ctx;
+    static constexpr bool          llama_cpu_rounding = true;
 };
 
 // One sequence being decoded: its KV cache and the working memory of the current step, all
 // on the device. It borrows the weights, so the DeviceWeights must outlive it.
+template <DecoderConfig C>
 struct Decoder {
     Weights       weights;
-    Arithmetic    arithmetic;
-    std::uint32_t n_ctx;      // positions the KV cache holds
     std::uint32_t n_past = 0; // positions decoded so far
 
     std::unique_ptr<Trace, CudaFree> trace;
-    // [layer][position][KV head][head_dim], in the build's cache format.
-    std::unique_ptr<Kv::Bits, CudaFree> k_cache;
-    std::unique_ptr<Kv::Bits, CudaFree> v_cache;
-    std::unique_ptr<float, CudaFree>         rope;   // [position]: head_dim/2 cosines, then sines
-    std::unique_ptr<float, CudaFree>         scores; // attention scratch, [query head][position]
-    std::unique_ptr<Trace, CudaFree>         operands; // for decode_from; null until it is used
+    // [layer][position][KV head][head_dim].
+    std::unique_ptr<typename C::Kv::Bits, CudaFree> k_cache;
+    std::unique_ptr<typename C::Kv::Bits, CudaFree> v_cache;
+    std::unique_ptr<float, CudaFree> rope;     // [position]: head_dim/2 cosines, then sines
+    std::unique_ptr<float, CudaFree> scores;   // attention scratch, [query head][position]
+    std::unique_ptr<Trace, CudaFree> operands; // for decode_from; null until it is used
+
+    static std::variant<Decoder, CudaError> make(Weights weights);
+
+    // Runs token at position n_past, which must be below C::n_ctx. Afterwards the device
+    // trace holds every intermediate of this step.
+    std::optional<CudaError> decode(Token token);
+
+    // The same step, but every op takes its operands from operands: another
+    // implementation's trace of this position. Each op is then checked on its own, on
+    // inputs the other implementation saw, and an error in one op cannot hide in the next.
+    // The KV cache takes that trace's K and V too.
+    std::optional<CudaError> decode_from(Token token, const Trace& operands);
+
+    std::optional<CudaError> read_trace(Trace& out) const;
+    std::optional<CudaError> read_logits(std::span<float, n_vocab> out) const;
 };
 
-std::variant<Decoder, CudaError> make_decoder(Weights weights, std::uint32_t n_ctx,
-                                              Arithmetic arithmetic);
-
-// Runs token at position n_past, which must be below n_ctx. Afterwards the device trace
-// holds every intermediate of this step.
-std::optional<CudaError> decode(Decoder& d, Token token);
-
-// The same step, but every op takes its operands from operands: another implementation's
-// trace of this position. Each op is then checked on its own, on inputs the other
-// implementation saw, and an error in one op cannot hide in the next. The KV cache takes
-// that trace's K and V too.
-std::optional<CudaError> decode_from(Decoder& d, Token token, const Trace& operands);
-
-std::optional<CudaError> read_trace(const Decoder& d, Trace& out);
-std::optional<CudaError> read_logits(const Decoder& d, std::span<float, n_vocab> out);
+// forward.cu defines the members for these configurations.
+extern template struct Decoder<EngineConfig>;
+extern template struct Decoder<LlamaCpuConfig>;
 } // namespace mk

@@ -210,27 +210,17 @@ int fail(std::string_view what) {
 int fail(const mk::CudaError& e) {
     return fail(std::format("{}: {}", e.call, e.text));
 }
-} // namespace
 
-int main(int argc, char** argv) {
-    const auto options = parse_args({argv, static_cast<std::size_t>(argc)});
-    if (!options) {
-        std::println(stderr, "{}", kUsage);
-        return 2;
-    }
-    const Options& o = *options;
-
-    const auto prompt = read_tokens(o.tokens);
-    if (!prompt) {
-        return fail(std::format("{}: {}", o.tokens, prompt.error()));
-    }
+// Decodes with the decoder that is compiled for configuration C.
+template <mk::DecoderConfig C>
+int run(const Options& o, const std::vector<mk::Token>* prompt) {
     // A dump has the layers of the prompt's positions only, so --per-op stops there. The
     // last generated token is never decoded, so it needs no position.
     const std::size_t generate = o.per_op ? 1 : o.generate;
     const std::size_t steps    = prompt->size() + (generate > 0 ? generate - 1 : 0);
-    if (steps > mk::arch::context_length) {
-        return fail(std::format("{} positions are more than the model's context of {}", steps,
-                                mk::arch::context_length));
+    if (steps > C::n_ctx) {
+        return fail(std::format("{} positions are more than the {} this build's KV cache holds",
+                                steps, C::n_ctx));
     }
 
     const auto file = mk::VerifiedFile::open(o.model.c_str());
@@ -241,13 +231,11 @@ int main(int argc, char** argv) {
     if (const auto* e = std::get_if<mk::CudaError>(&uploaded)) {
         return fail(*e);
     }
-    auto made = mk::make_decoder(std::get<mk::Upload>(uploaded).weights.view(),
-                                 static_cast<std::uint32_t>(steps),
-                                 o.per_op ? mk::Arithmetic::llama_cpu : mk::Arithmetic::exact);
+    auto made = mk::Decoder<C>::make(std::get<mk::Upload>(uploaded).weights.view());
     if (const auto* e = std::get_if<mk::CudaError>(&made)) {
         return fail(*e);
     }
-    mk::Decoder& decoder = std::get<mk::Decoder>(made);
+    mk::Decoder<C>& decoder = std::get<mk::Decoder<C>>(made);
 
     std::println("forward: {} prompt tokens, {} to generate, {}", prompt->size(), generate,
                  o.per_op ? "each op on the reference's operands, with llama.cpp's CPU rounding"
@@ -278,14 +266,14 @@ int main(int argc, char** argv) {
         }
 
         const auto start = std::chrono::steady_clock::now();
-        if (const auto e = o.per_op ? mk::decode_from(decoder, token, *reference)
-                                    : mk::decode(decoder, token)) {
+        if (const auto e = o.per_op ? decoder.decode_from(token, *reference)
+                                    : decoder.decode(token)) {
             return fail(*e);
         }
         decode_seconds +=
             std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-        if (const auto e = layers ? mk::read_trace(decoder, *ours)
-                                  : mk::read_logits(decoder, ours->result_output)) {
+        if (const auto e = layers ? decoder.read_trace(*ours)
+                                  : decoder.read_logits(ours->result_output)) {
             return fail(*e);
         }
 
@@ -346,4 +334,19 @@ int main(int argc, char** argv) {
     std::println("result: {} (limits: rel L2 {:.0e}, 1-cosine {:.0e}, KL {:.0e}, top-1 equal)",
                  ok ? "within tolerance" : "OUTSIDE TOLERANCE", tol.rel_l2, tol.one_minus_cos, tol.kl);
     return ok ? 0 : 1;
+}
+} // namespace
+
+int main(int argc, char** argv) {
+    const auto options = parse_args({argv, static_cast<std::size_t>(argc)});
+    if (!options) {
+        std::println(stderr, "{}", kUsage);
+        return 2;
+    }
+    const auto prompt = read_tokens(options->tokens);
+    if (!prompt) {
+        return fail(std::format("{}: {}", options->tokens, prompt.error()));
+    }
+    return options->per_op ? run<mk::LlamaCpuConfig>(*options, &*prompt)
+                           : run<mk::EngineConfig>(*options, &*prompt);
 }
