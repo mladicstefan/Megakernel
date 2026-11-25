@@ -15,8 +15,8 @@ constexpr unsigned kBlocks        = kMegaBlocks;
 constexpr unsigned kWarpsPerBlock = kThreads / 32;
 constexpr unsigned kWarps         = kBlocks * kWarpsPerBlock;
 constexpr unsigned kBlocksPerSm   = kBlocks / BuildGpu::sms;
-// One barrier after the embedding, five per layer, one after the logits.
-constexpr unsigned kBarriers = 2 + 5 * static_cast<unsigned>(n_layer);
+// One barrier after the embedding, six per layer, one after the logits.
+constexpr unsigned kBarriers = 2 + 6 * static_cast<unsigned>(n_layer);
 // About a second of spinning. A barrier that waits this long will never be met.
 constexpr unsigned kSpinLimit = 1u << 27;
 
@@ -28,11 +28,19 @@ constexpr unsigned kHalf      = head_dim / 2;
 constexpr unsigned kQ         = n_head * head_dim;    // the width of Q and of kqv_out
 constexpr unsigned kKvPerPos  = n_head_kv * head_dim; // cache entries per layer and position
 constexpr unsigned kGroup     = n_head / n_head_kv;   // query heads per KV head
+constexpr unsigned kKvHeads   = n_head_kv;
+// Attention splits the grid by KV head: block b works for KV head b % kKvHeads, as its
+// member b / kKvHeads.
+constexpr unsigned kMembers   = kBlocks / kKvHeads;
+constexpr unsigned kLaneDims  = kHeadDim / 32; // head dimensions one lane of a warp holds
 constexpr unsigned kVocab     = n_vocab;
 
 // row_dot reads a row 256 weights at a time, 16 bytes per thread.
 static_assert(kEmbd % 256 == 0 && kFf % 256 == 0 && kQ % 256 == 0);
 static_assert(kHeadDim <= kThreads && kThreads % 32 == 0);
+static_assert(kBlocks % kKvHeads == 0 && kHeadDim % 32 == 0);
+// The attention merges give one thread to each (query head of the group, dimension).
+static_assert(kThreads == kGroup * kHeadDim);
 // A warp's first row is warp * rows / kWarps, in 32 bits.
 static_assert(std::uint64_t{kWarps} * kVocab < (std::uint64_t{1} << 32));
 
@@ -81,8 +89,8 @@ __device__ float warp_sum(float v) {
     return v;
 }
 
-// The sum, or the maximum, of v over the block's threads. Every thread gets the result.
-// scratch is shared memory for one value per warp.
+// The sum of v over the block's threads. Every thread gets the result. scratch is shared
+// memory for one value per warp.
 __device__ float block_sum(float v, float* scratch) {
     v = warp_sum(v);
     if (threadIdx.x % 32 == 0) {
@@ -95,21 +103,6 @@ __device__ float block_sum(float v, float* scratch) {
     }
     __syncthreads(); // scratch is free again
     return total;
-}
-__device__ float block_max(float v, float* scratch) {
-    for (unsigned lanes = 16; lanes > 0; lanes /= 2) {
-        v = fmaxf(v, __shfl_xor_sync(0xffffffffu, v, lanes));
-    }
-    if (threadIdx.x % 32 == 0) {
-        scratch[threadIdx.x / 32] = v;
-    }
-    __syncthreads();
-    float max = scratch[0];
-    for (unsigned w = 1; w < kWarpsPerBlock; ++w) {
-        max = fmaxf(max, scratch[w]);
-    }
-    __syncthreads();
-    return max;
 }
 
 // Waits until every block of the grid has finished the phase that ends here. target is
@@ -202,60 +195,85 @@ __device__ void for_rows(const std::uint16_t* w, unsigned rows, const float* xs,
     }
 }
 
-// Attention for one query head, by one block: q_norm, k_norm, RoPE, the cache write, the
-// scores, their softmax and the weighted sum of V. The block's own K and V of this position
-// come from shared memory, in the cache's precision, and the earlier positions from the
-// cache. scores is this head's scratch in global memory.
+// How much of a softmax one block, or one warp, has summed for each query head of a group:
+// the largest score it saw, and the sums of exp(score - max) and of exp(score - max) * V.
+// Two of these merge by scaling each with exp(its max - the larger max).
+struct AttnPartial {
+    float max[kGroup];
+    float sum[kGroup];
+    float acc[kGroup][kHeadDim];
+};
+
+// The factor that brings a partial with largest score `max` to the scale of `to`. A
+// partial that saw no position has max = -infinity and counts for nothing.
+__device__ float rescale(float max, float to) {
+    return max == -INFINITY ? 0.0f : expf(max - to);
+}
+
+// The first half of attention, by every block: this block's part of the softmax of one KV
+// head's two query heads. The grid's warps split the cached positions among them, position
+// j going to warp j % (kMembers * kWarpsPerBlock) of the KV head's blocks. A warp reads the
+// K and V of a position once, for both query heads, each lane holding kLaneDims
+// dimensions. This step's own K and V come from shared memory, in the cache's precision.
 template <DecoderConfig C>
-__device__ void attention(unsigned head, const LayerTrace* in, LayerTrace* out,
-                          const float* q_norm, const float* k_norm,
-                          typename C::Kv::Bits* k_cache, typename C::Kv::Bits* v_cache,
-                          const float* rope, float* scores, unsigned pos, float* scratch) {
+__device__ void attention_part(unsigned kv_head, unsigned member, const LayerTrace* in,
+                               const float* q_norm, const float* k_norm,
+                               typename C::Kv::Bits* k_cache, typename C::Kv::Bits* v_cache,
+                               const float* rope, unsigned pos, AttnPartial* mine,
+                               float* scratch) {
     using Kv = typename C::Kv;
-    __shared__ float q[kHeadDim];
+    __shared__ float q[kGroup][kHeadDim];
     __shared__ float k[kHeadDim];
     __shared__ float v[kHeadDim];
-    const unsigned   t       = threadIdx.x;
-    const unsigned   kv_head = head / kGroup; // consecutive query heads share a KV head
-    const unsigned   slot    = kv_head * kHeadDim;
+    __shared__ float warp_max[kWarpsPerBlock][kGroup];
+    __shared__ float warp_sum_[kWarpsPerBlock][kGroup];
+    __shared__ float warp_acc[kWarpsPerBlock][kGroup][kHeadDim];
+    const unsigned   t    = threadIdx.x;
+    const unsigned   slot = kv_head * kHeadDim;
+    const float      n    = static_cast<float>(kHeadDim);
 
-    float q_squares = 0;
-    float k_squares = 0;
+    // q_norm of both query heads and k_norm, then RoPE.
+    float squares[kGroup + 1] = {};
     if (t < kHeadDim) {
-        q[t]      = fresh(in->Qcur + head * kHeadDim + t);
-        k[t]      = fresh(in->Kcur + slot + t);
-        v[t]      = fresh(in->Vcur + slot + t);
-        q_squares = q[t] * q[t];
-        k_squares = k[t] * k[t];
+        for (unsigned h = 0; h < kGroup; ++h) {
+            q[h][t]    = fresh(in->Qcur + (kv_head * kGroup + h) * kHeadDim + t);
+            squares[h] = q[h][t] * q[h][t];
+        }
+        k[t]            = fresh(in->Kcur + slot + t);
+        v[t]            = fresh(in->Vcur + slot + t);
+        squares[kGroup] = k[t] * k[t];
     }
-    const float n       = static_cast<float>(kHeadDim);
-    const float q_scale = 1.0f / sqrtf(block_sum(q_squares, scratch) / n + kNormEps);
-    const float k_scale = 1.0f / sqrtf(block_sum(k_squares, scratch) / n + kNormEps);
+    float scale[kGroup + 1];
+    for (unsigned h = 0; h <= kGroup; ++h) {
+        scale[h] = 1.0f / sqrtf(block_sum(squares[h], scratch) / n + kNormEps);
+    }
     if (t < kHeadDim) {
-        q[t] = q[t] * q_scale * q_norm[t];
-        k[t] = k[t] * k_scale * k_norm[t];
+        for (unsigned h = 0; h < kGroup; ++h) {
+            q[h][t] = q[h][t] * scale[h] * q_norm[t];
+        }
+        k[t] = k[t] * scale[kGroup] * k_norm[t];
     }
     __syncthreads();
-
-    // RoPE: element t rotates with element t + kHalf.
-    if (t < kHalf) {
-        const float c  = rope[t];
-        const float s  = rope[kHalf + t];
-        const float q0 = q[t], q1 = q[t + kHalf];
+    if (t < kHalf) { // element t rotates with element t + kHalf
+        const float c = rope[t];
+        const float r = rope[kHalf + t];
+        for (unsigned h = 0; h < kGroup; ++h) {
+            const float q0  = q[h][t], q1 = q[h][t + kHalf];
+            q[h][t]         = q0 * c - q1 * r;
+            q[h][t + kHalf] = q0 * r + q1 * c;
+        }
         const float k0 = k[t], k1 = k[t + kHalf];
-        q[t]           = q0 * c - q1 * s;
-        q[t + kHalf]   = q0 * s + q1 * c;
-        k[t]           = k0 * c - k1 * s;
-        k[t + kHalf]   = k0 * s + k1 * c;
+        k[t]           = k0 * c - k1 * r;
+        k[t + kHalf]   = k0 * r + k1 * c;
     }
     __syncthreads();
 
     // Later steps read this position from the cache, so this step uses the same rounded
-    // values. Only the first query head of a group writes the cache: one writer per slot.
+    // values. One block per KV head writes the cache: one writer per slot.
     if (t < kHeadDim) {
         const typename Kv::Bits k_bits = Kv::store(k[t]);
         const typename Kv::Bits v_bits = Kv::store(v[t]);
-        if (head % kGroup == 0) {
+        if (member == 0) {
             k_cache[std::size_t{pos} * kKvPerPos + slot + t] = k_bits;
             v_cache[std::size_t{pos} * kKvPerPos + slot + t] = v_bits;
         }
@@ -264,39 +282,108 @@ __device__ void attention(unsigned head, const LayerTrace* in, LayerTrace* out,
     }
     __syncthreads();
 
-    const float scale    = 1.0f / sqrtf(n);
-    float       my_max   = -INFINITY;
-    for (unsigned j = t; j <= pos; j += kThreads) {
-        float dot = 0;
-        if (j < pos) {
-            const typename Kv::Bits* kj = k_cache + std::size_t{j} * kKvPerPos + slot;
-            for (unsigned i = 0; i < kHeadDim; ++i) {
-                dot += Kv::load(kj[i]) * q[i];
+    // An online softmax over this warp's positions, for both query heads.
+    const unsigned warp   = t / 32;
+    const unsigned dim    = (t % 32) * kLaneDims; // this lane's first dimension
+    const float    scaled = 1.0f / sqrtf(n);
+    float          max[kGroup];
+    float          sum[kGroup] = {};
+    float          acc[kGroup][kLaneDims] = {};
+    for (unsigned h = 0; h < kGroup; ++h) {
+        max[h] = -INFINITY;
+    }
+    for (unsigned j = member * kWarpsPerBlock + warp; j <= pos; j += kMembers * kWarpsPerBlock) {
+        float kj[kLaneDims];
+        float vj[kLaneDims];
+        for (unsigned d = 0; d < kLaneDims; ++d) {
+            const std::size_t at = std::size_t{j} * kKvPerPos + slot + dim + d;
+            kj[d]                = j < pos ? Kv::load(k_cache[at]) : k[dim + d];
+            vj[d]                = j < pos ? Kv::load(v_cache[at]) : v[dim + d];
+        }
+        for (unsigned h = 0; h < kGroup; ++h) {
+            float dot = 0;
+            for (unsigned d = 0; d < kLaneDims; ++d) {
+                dot += kj[d] * q[h][dim + d];
             }
-        } else {
-            for (unsigned i = 0; i < kHeadDim; ++i) {
-                dot += k[i] * q[i];
+            const float score = warp_sum(dot) * scaled;
+            float       weight = 1.0f;
+            if (score > max[h]) { // a new maximum: bring what is summed so far to its scale
+                const float shrink = expf(max[h] - score);
+                max[h]             = score;
+                sum[h] *= shrink;
+                for (unsigned d = 0; d < kLaneDims; ++d) {
+                    acc[h][d] *= shrink;
+                }
+            } else {
+                weight = expf(score - max[h]);
+            }
+            sum[h] += weight;
+            for (unsigned d = 0; d < kLaneDims; ++d) {
+                acc[h][d] += weight * vj[d];
             }
         }
-        scores[j] = dot * scale;
-        my_max    = fmaxf(my_max, scores[j]);
     }
-    const float max    = block_max(my_max, scratch);
-    float       my_sum = 0;
-    for (unsigned j = t; j <= pos; j += kThreads) {
-        scores[j] = expf(scores[j] - max);
-        my_sum += scores[j];
+    for (unsigned h = 0; h < kGroup; ++h) {
+        for (unsigned d = 0; d < kLaneDims; ++d) {
+            warp_acc[warp][h][dim + d] = acc[h][d];
+        }
+        if (t % 32 == 0) {
+            warp_max[warp][h]  = max[h];
+            warp_sum_[warp][h] = sum[h];
+        }
     }
-    const float total = block_sum(my_sum, scratch); // its barriers also publish scores
+    __syncthreads();
 
-    if (t < kHeadDim) {
-        float sum = 0;
-        for (unsigned j = 0; j < pos; ++j) {
-            sum += scores[j] / total * Kv::load(v_cache[std::size_t{j} * kKvPerPos + slot + t]);
-        }
-        sum += scores[pos] / total * v[t];
-        out->kqv_out[head * kHeadDim + t] = sum;
+    // Merge the block's warps. Thread t has query head t / kHeadDim, dimension t % kHeadDim.
+    const unsigned h = t / kHeadDim;
+    const unsigned i = t % kHeadDim;
+    float          block_max_ = warp_max[0][h];
+    for (unsigned w = 1; w < kWarpsPerBlock; ++w) {
+        block_max_ = fmaxf(block_max_, warp_max[w][h]);
     }
+    float total = 0;
+    float value = 0;
+    for (unsigned w = 0; w < kWarpsPerBlock; ++w) {
+        const float f = rescale(warp_max[w][h], block_max_);
+        total += f * warp_sum_[w][h];
+        value += f * warp_acc[w][h][i];
+    }
+    mine->acc[h][i] = value;
+    if (i == 0) {
+        mine->max[h] = block_max_;
+        mine->sum[h] = total;
+    }
+}
+
+// The second half, by one block per KV head: merges the blocks' partials into kqv_out.
+// parts is the first member's partial; member m's is kKvHeads further for each m.
+__device__ void attention_merge(unsigned kv_head, unsigned pos, const AttnPartial* parts,
+                                LayerTrace* out) {
+    __shared__ float max[kGroup][kMembers];
+    __shared__ float sum[kGroup][kMembers];
+    const unsigned   t = threadIdx.x;
+    // Members past this one saw no position yet.
+    const unsigned members = min(kMembers, pos / kWarpsPerBlock + 1);
+    if (t < kGroup * members) {
+        const AttnPartial& part = parts[(t / kGroup) * kKvHeads];
+        max[t % kGroup][t / kGroup] = fresh(&part.max[t % kGroup]);
+        sum[t % kGroup][t / kGroup] = fresh(&part.sum[t % kGroup]);
+    }
+    __syncthreads();
+    const unsigned h      = t / kHeadDim;
+    const unsigned i      = t % kHeadDim;
+    float          largest = max[h][0];
+    for (unsigned m = 1; m < members; ++m) {
+        largest = fmaxf(largest, max[h][m]);
+    }
+    float total = 0;
+    float value = 0;
+    for (unsigned m = 0; m < members; ++m) {
+        const float f = rescale(max[h][m], largest);
+        total += f * sum[h][m];
+        value += f * fresh(&parts[m * kKvHeads].acc[h][i]);
+    }
+    out->kqv_out[(kv_head * kGroup + h) * kHeadDim + i] = value / total;
 }
 
 // One decode step. out is the trace the phases write, in the trace they read: the same one
@@ -306,7 +393,7 @@ template <DecoderConfig C>
 __global__ void __launch_bounds__(kThreads, kBlocksPerSm)
 megakernel(Weights weights, Trace* out, const Trace* in,
                            typename C::Kv::Bits* k_cache, typename C::Kv::Bits* v_cache,
-                           const float* rope, float* scores, MegaSync* sync, unsigned token,
+                           const float* rope, AttnPartial* partials, MegaSync* sync, unsigned token,
                            unsigned pos, unsigned epoch) {
     // static: without it every thread rebuilds the table on its stack.
     static constexpr Offsets offsets = kOffsets;
@@ -340,11 +427,14 @@ megakernel(Weights weights, Trace* out, const Trace* in,
                         [a](unsigned r, float y) { a->Vcur[r] = y; });
         barrier(sync, arrived += kBlocks);
 
-        // Attention: one block per query head.
-        if (blockIdx.x < n_head) {
-            attention<C>(blockIdx.x, i, a, f32_at(base, o.q_norm), f32_at(base, o.k_norm),
-                         k_cache + cache, v_cache + cache, rope,
-                         scores + std::size_t{blockIdx.x} * C::n_ctx, pos, scratch);
+        // Attention. Every block sums its part of the softmax of one KV head's query
+        // heads, then one block per KV head merges the parts.
+        attention_part<C>(blockIdx.x % kKvHeads, blockIdx.x / kKvHeads, i, f32_at(base, o.q_norm),
+                          f32_at(base, o.k_norm), k_cache + cache, v_cache + cache, rope, pos,
+                          partials + blockIdx.x, scratch);
+        barrier(sync, arrived += kBlocks);
+        if (blockIdx.x < kKvHeads) {
+            attention_merge(blockIdx.x, pos, partials + blockIdx.x, a);
         }
         barrier(sync, arrived += kBlocks);
 
@@ -446,8 +536,8 @@ std::variant<Token, CudaError> launch(Megakernel<C>& m, Decoder<C>& d, Token tok
     megakernel<C><<<kBlocks, kThreads>>>(d.weights, d.trace.get(), in, d.k_cache.get(),
                                          d.v_cache.get(),
                                          d.rope.get() + std::size_t{d.n_past} * head_dim,
-                                         d.scores.get(), m.sync.get(), token.id, d.n_past,
-                                         m.epoch);
+                                         static_cast<AttnPartial*>(m.partials.get()),
+                                         m.sync.get(), token.id, d.n_past, m.epoch);
     MK_TRY(cudaGetLastError());
     // failed and token, read together. The copy waits for the kernel.
     unsigned result[2];
@@ -474,6 +564,9 @@ std::variant<Megakernel<C>, CudaError> Megakernel<C>::make() {
     Megakernel m;
     MK_TRY(device_new(m.sync, 1));
     MK_TRY(cudaMemset(m.sync.get(), 0, sizeof(MegaSync)));
+    void* partials = nullptr;
+    MK_TRY(cudaMalloc(&partials, kBlocks * sizeof(AttnPartial)));
+    m.partials.reset(partials);
     return m;
 }
 

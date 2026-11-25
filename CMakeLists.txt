@@ -160,6 +160,10 @@ endif()
 if(TARGET forward)
   add_test(NAME megakernel.each_phase_matches_reference
     COMMAND forward --megakernel --check ${CMAKE_SOURCE_DIR}/tests/data/reference/planets/tokens.txt)
+  # Past 264 positions an attention warp sums more than one position.
+  add_test(NAME megakernel.matches_reference_past_264_positions
+    COMMAND forward --megakernel --check --generate 320
+            ${CMAKE_SOURCE_DIR}/tests/data/reference/planets/tokens.txt)
 endif()
 
 # The forward pass against llama.cpp's dump of the committed prompt. The dump is not in the

@@ -12,8 +12,9 @@ difference per tensor and exits 1 when a limit is exceeded.
   equals `tests/data/reference/planets/greedy.txt`.
 - `mega-check`: `--megakernel --check` compares the nine tensors the megakernel writes
   (`embd`, `Qcur`, `Kcur`, `Vcur`, `kqv_out`, `ffn_inp`, `ffn_swiglu`, `l_out`,
-  `result_output`) at all 45 positions, and its token with the reference's. Limits: rel L2
-  2e-3, 1-cosine 5e-7, KL 1e-9 nats, equal tokens.
+  `result_output`) at every position, and its token with the reference's. Limits: rel L2
+  5e-5, 1-cosine 1e-10, KL 2e-9 nats, equal tokens. `kqv_out` has its own: rel L2 5e-3,
+  1-cosine 5e-6.
 - `mega-speed`: the `decode:` line reports steps, ms per step and tokens/s.
 - `mega-sanitizers`: `compute-sanitizer` with `memcheck`, `racecheck` and `synccheck`
   reports 0 errors and 0 hazards.
@@ -25,7 +26,8 @@ difference per tensor and exits 1 when a limit is exceeded.
 - Configure with `-DMODEL_GGUF=$PWD/models/Qwen_Qwen3-0.6B-bf16.gguf`, build, and run
   `<dir>/forward --megakernel tests/data/reference/planets/tokens.txt`.
 - `--generate <n>` sets how many tokens to generate. `--check` adds the comparison.
-- ctest runs the comparison as `megakernel.each_phase_matches_reference`. It needs the
+- ctest runs the comparison as `megakernel.each_phase_matches_reference` (45 positions)
+  and `megakernel.matches_reference_past_264_positions` (333 positions). They need the
   model and a GPU, but no llama.cpp dump.
 
 ## Driving it with verify.sh
@@ -46,9 +48,14 @@ Preconditions:
   exit=$?`. Expect `exit=0`, nine table rows, `the megakernel's token is the reference's
   at 45 of 45 positions`, and `result: within tolerance`. `embd` is exactly 0, `kqv_out`
   is the largest at about 4e-4, and every other row is below 6e-6.
+- **Check past 264 positions.** Run the same with `--generate 587` (600 positions, about
+  25 s). Expect `600 of 600 positions` and `within tolerance`, with `kqv_out` near 1.3e-3.
+  Up to 264 positions every attention warp sums at most one position, so only a longer
+  run exercises the sum over several.
 - **Speed.** Run `$F --megakernel --generate 128 $P/tokens.txt` three times and keep the
-  `decode:` lines. Measured on the RTX 4070 Ti SUPER on 2026-11-25: 3.11 ms per step, 322
-  tokens/s, the same to 0.01 ms in three runs. With `--generate 1024`: 8.15 ms per step.
+  `decode:` lines. Measured on the RTX 4070 Ti SUPER on 2026-11-25: 2.42 to 2.44 ms per
+  step, 410 to 413 tokens/s. With `--generate 1024`: 2.56 ms, 390 tokens/s. With
+  `--generate 4000`: 2.85 ms, 350 tokens/s.
 - **Sanitizers.** For each of `memcheck`, `racecheck` and `synccheck`, run
   `compute-sanitizer --tool <tool> $F --megakernel --generate 3 $P/tokens.txt >
   $EV/mega-<tool>.log 2>&1`. Expect `generated: [25, 362, 8]` and `0 errors` or `0
@@ -57,9 +64,9 @@ Preconditions:
 
 ## Gotchas
 
-- The speed falls as the context grows: attention runs one block per query head and walks
-  the cached positions one after another. Report the number of positions with every
-  tokens/s figure.
+- The speed falls as the context grows, because attention reads the whole KV cache: 0.11
+  ms per step more for every 1,000 positions (measured between 1,037 and 4,013). Report
+  the number of positions with every tokens/s figure.
 - The first step of a process also loads the kernel, so a short run reads slower per step
   than a long one would at the same context. Compare runs of the same length.
 - With `--check` the `decode:` time includes uploading the reference's trace for every
@@ -68,7 +75,8 @@ Preconditions:
   is tested by the run without `--check`.
 - `kqv_out` differs more than the other tensors because K and V are rounded to BF16 on
   their way into the cache. A sum in another order can move a value across a rounding
-  boundary, which changes one cache entry by one BF16 step.
+  boundary, which changes one cache entry by one BF16 step. With an F32 cache
+  (`EngineConfig::Kv = KvF32`, in a scratch copy) `kqv_out` is at 3.7e-6.
 - The grid is 264 blocks of 256 threads, and every barrier waits for all of them.
   `Megakernel::make` fails with `the GPU cannot keep the whole grid resident` if the
   device cannot run 4 blocks per SM at once. A barrier that waits about a second gives up,
