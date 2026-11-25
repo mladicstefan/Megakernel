@@ -1,5 +1,6 @@
 #include "compare.hpp"
 #include "forward.hpp"
+#include "greedy.hpp"
 #include "megakernel.hpp"
 #include "verified_file.hpp"
 
@@ -102,38 +103,6 @@ std::optional<Options> parse_args(std::span<char*> args) {
         return std::nullopt;
     }
     return o;
-}
-
-// The IDs in a file like tokens.txt, "[785, 32875, ...]": every run of digits is one ID.
-// The file is untrusted, so each ID is checked against the vocabulary.
-std::expected<std::vector<mk::Token>, std::string> read_tokens(const std::string& path) {
-    std::ifstream is(path);
-    if (!is) {
-        return std::unexpected("cannot open");
-    }
-    const std::string      text{std::istreambuf_iterator<char>(is), {}};
-    std::vector<mk::Token> out;
-    const char*            p   = text.data();
-    const char* const      end = p + text.size();
-    while (p != end) {
-        if (*p < '0' || *p > '9') {
-            ++p;
-            continue;
-        }
-        std::uint64_t id   = 0;
-        const auto    read = std::from_chars(p, end, id);
-        const auto    tok  = read.ec == std::errc{} ? mk::Token::checked(id) : std::nullopt;
-        if (!tok) {
-            return std::unexpected(std::format("the ID at byte {} is outside the vocabulary of {}",
-                                               p - text.data(), mk::n_vocab));
-        }
-        out.push_back(*tok);
-        p = read.ptr;
-    }
-    if (out.empty()) {
-        return std::unexpected("no token IDs");
-    }
-    return out;
 }
 
 // One F32 tensor of a dump, which must be exactly the size of out.
@@ -247,19 +216,11 @@ std::expected<mk::DeviceWeights, std::string> load_weights(const std::string& mo
     return std::move(std::get<mk::Upload>(uploaded).weights);
 }
 
-void print_generated(const std::vector<mk::Token>& generated) {
-    std::print("generated: [");
-    for (std::size_t i = 0; i < generated.size(); ++i) {
-        std::print("{}{}", i ? ", " : "", generated[i].id);
-    }
-    std::println("]");
-}
-
 // The megakernel decodes. With --check, the reference pass decodes the same tokens first
 // and the megakernel runs each phase on the reference's operands.
 int run_megakernel(const Options& o, const std::vector<mk::Token>* prompt) {
     using C = mk::EngineConfig;
-    const std::size_t steps = prompt->size() + (o.generate > 0 ? o.generate - 1 : 0);
+    const std::size_t steps = mk::positions(prompt->size(), o.generate);
     if (steps > C::n_ctx) {
         return fail(std::format("{} positions are more than the {} this build's KV cache holds",
                                 steps, C::n_ctx));
@@ -276,6 +237,18 @@ int run_megakernel(const Options& o, const std::vector<mk::Token>* prompt) {
     if (!weights) {
         return fail(weights.error());
     }
+    std::println("forward: {} prompt tokens, {} to generate, megakernel{}", prompt->size(),
+                 o.generate, o.check ? ", each phase on the reference pass's operands" : "");
+    if (!o.check) {
+        const auto g = mk::generate_greedy<C>(weights->view(), *prompt, o.generate);
+        if (!g) {
+            return fail(g.error());
+        }
+        mk::print_generated(g->tokens);
+        mk::print_speed(*g);
+        return 0;
+    }
+
     auto made_decoder   = mk::Decoder<C>::make(weights->view());
     auto made_reference = mk::Decoder<C>::make(weights->view());
     auto made_kernel    = mk::Megakernel<C>::make();
@@ -292,9 +265,6 @@ int run_megakernel(const Options& o, const std::vector<mk::Token>* prompt) {
     auto& reference = std::get<mk::Decoder<C>>(made_reference);
     auto& kernel    = std::get<mk::Megakernel<C>>(made_kernel);
 
-    std::println("forward: {} prompt tokens, {} to generate, megakernel{}", prompt->size(),
-                 o.generate, o.check ? ", each phase on the reference pass's operands" : "");
-
     // The tensors the megakernel writes. It fuses the others away.
     constexpr std::string_view kMaterialized[] = {"embd",    "Qcur",    "Kcur",       "Vcur",
                                                   "kqv_out", "ffn_inp", "ffn_swiglu", "l_out"};
@@ -310,61 +280,52 @@ int run_megakernel(const Options& o, const std::vector<mk::Token>* prompt) {
         if (pos < prompt->size()) {
             token = (*prompt)[pos];
         }
-        if (o.check) {
-            if (const auto e = reference.decode(token)) {
-                return fail(*e);
-            }
-            if (const auto e = reference.read_trace(*ref)) {
-                return fail(*e);
-            }
+        if (const auto e = reference.decode(token)) {
+            return fail(*e);
+        }
+        if (const auto e = reference.read_trace(*ref)) {
+            return fail(*e);
         }
         const auto start = std::chrono::steady_clock::now();
-        const auto next  = o.check ? kernel.decode_from(decoder, token, *ref)
-                                   : kernel.decode(decoder, token);
+        const auto next  = kernel.decode_from(decoder, token, *ref);
         seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         if (const auto* e = std::get_if<mk::CudaError>(&next)) {
             return fail(*e);
         }
         token = std::get<mk::Token>(next);
 
-        if (o.check) {
-            if (const auto e = decoder.read_trace(*ours)) {
-                return fail(*e);
-            }
-            std::vector<std::span<const float>> theirs;
-            mk::for_each_tensor(std::as_const(*ref),
-                                [&](int, std::string_view, std::span<const float> values) {
-                                    theirs.push_back(values);
-                                });
-            std::size_t at = 0;
-            mk::for_each_tensor(std::as_const(*ours), [&](int layer, std::string_view name,
-                                                          std::span<const float> values) {
-                if (std::ranges::contains(kMaterialized, name)) {
-                    table.add(pos, layer, name, values, theirs[at]);
-                }
-                ++at;
-            });
-            const std::span<const float> ref_logits = ref->result_output;
-            table.add(pos, -1, "result_output", ours->result_output, ref_logits);
-            max_kl = std::max(max_kl, mk::kl_divergence(ref_logits, ours->result_output));
-            // The megakernel's own argmax, against the reference's logits.
-            const mk::Token expected = *mk::Token::checked(mk::argmax(ref_logits));
-            top1_agree += token.id == expected.id;
-            token = expected; // both keep decoding the reference's chain
+        if (const auto e = decoder.read_trace(*ours)) {
+            return fail(*e);
         }
+        std::vector<std::span<const float>> theirs;
+        mk::for_each_tensor(std::as_const(*ref),
+                            [&](int, std::string_view, std::span<const float> values) {
+                                theirs.push_back(values);
+                            });
+        std::size_t at = 0;
+        mk::for_each_tensor(std::as_const(*ours), [&](int layer, std::string_view name,
+                                                      std::span<const float> values) {
+            if (std::ranges::contains(kMaterialized, name)) {
+                table.add(pos, layer, name, values, theirs[at]);
+            }
+            ++at;
+        });
+        const std::span<const float> ref_logits = ref->result_output;
+        table.add(pos, -1, "result_output", ours->result_output, ref_logits);
+        max_kl = std::max(max_kl, mk::kl_divergence(ref_logits, ours->result_output));
+        // The megakernel's own argmax, against the reference's logits.
+        const mk::Token expected = *mk::Token::checked(mk::argmax(ref_logits));
+        top1_agree += token.id == expected.id;
+        token = expected; // both keep decoding the reference's chain
         if (pos + 1 >= prompt->size() && generated.size() < o.generate) {
             generated.push_back(token);
         }
     }
 
-    print_generated(generated);
+    mk::print_generated(generated);
     std::println("decode: {} steps in {:.3f} s, {:.3f} ms per step, {:.0f} tokens/s", steps,
                  seconds, seconds * 1e3 / static_cast<double>(steps),
                  static_cast<double>(steps) / seconds);
-    if (!o.check) {
-        return 0;
-    }
-
     bool ok = top1_agree == steps && max_kl <= kMegakernelTolerance.kl;
     std::println("check: against the reference pass");
     std::println("  {:<14} {:>7} {:>10} {:>10} {:>10}  {}", "tensor", "tensors", "max abs", "rel L2",
@@ -477,7 +438,7 @@ int run(const Options& o, const std::vector<mk::Token>* prompt) {
         }
     }
 
-    print_generated(generated);
+    mk::print_generated(generated);
     std::println("decode: {} steps in {:.3f} s, {:.1f} ms per step", steps, decode_seconds,
                  decode_seconds * 1e3 / static_cast<double>(steps));
     if (!o.compare) {
@@ -512,7 +473,7 @@ int main(int argc, char** argv) {
         std::println(stderr, "{}", kUsage);
         return 2;
     }
-    const auto prompt = read_tokens(options->tokens);
+    const auto prompt = mk::read_tokens(options->tokens);
     if (!prompt) {
         return fail(std::format("{}: {}", options->tokens, prompt.error()));
     }

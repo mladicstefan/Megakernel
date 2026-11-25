@@ -1,8 +1,8 @@
 # Megakernel
 
-A user runs `forward --megakernel <tokens.txt>` and gets the token IDs that the megakernel
+A user runs `engine --tokens <tokens.txt>` and gets the token IDs that the megakernel
 generates greedily, with its time per step and tokens per second. One kernel launch runs a
-whole decode step. With `--check` the reference pass decodes the same tokens next to it,
+whole decode step. `forward --megakernel <tokens.txt>` does the same from the test tool. With `--check` the reference pass decodes the same tokens next to it,
 the megakernel runs each phase on the reference's operands, and the tool prints the worst
 difference per tensor and exits 1 when a limit is exceeded.
 
@@ -10,6 +10,10 @@ difference per tensor and exits 1 when a limit is exceeded.
 
 - `mega-greedy`: for `tests/data/reference/planets/tokens.txt`, the `generated:` line
   equals `tests/data/reference/planets/greedy.txt`.
+- `mega-engine`: `engine [model.gguf] --tokens <tokens.txt> [--generate <n>]` prints the
+  first three lines of the engine, then `generated:` and `decode:`. It skips the checksum
+  proof. A build for a model without a forward pass (toy) exits 1 with `this build cannot
+  decode: it has no forward pass for a 'toy' model`.
 - `mega-check`: `--megakernel --check` compares the nine tensors the megakernel writes
   (`embd`, `Qcur`, `Kcur`, `Vcur`, `kqv_out`, `ffn_inp`, `ffn_swiglu`, `l_out`,
   `result_output`) at every position, and its token with the reference's. Limits: rel L2
@@ -26,7 +30,7 @@ difference per tensor and exits 1 when a limit is exceeded.
 - Configure with `-DMODEL_GGUF=$PWD/models/Qwen_Qwen3-0.6B-bf16.gguf`, build, and run
   `<dir>/forward --megakernel tests/data/reference/planets/tokens.txt`.
 - `--generate <n>` sets how many tokens to generate. `--check` adds the comparison.
-- ctest runs the comparison as `megakernel.each_phase_matches_reference` (45 positions)
+- ctest runs the engine as `engine.generates_the_reference_tokens`, and the comparison as `megakernel.each_phase_matches_reference` (45 positions)
   and `megakernel.matches_reference_at_333_positions`. They need the
   model and a GPU, but no llama.cpp dump.
 
@@ -41,6 +45,11 @@ Preconditions:
   models/Qwen_Qwen3-0.6B-bf16.gguf`, then `cmake --build $S/engine-build -j --target
   forward`.
 
+- **Engine.** Run `RUN_ID=<id> $V run-engine decode --tokens $P/tokens.txt`. Expect
+  `exit=0`, a `generated:` line equal to `$P/greedy.txt`, and a `decode:` line. Run it with
+  `--tokens /nonexistent.txt`, with a file holding `[1, 999999]`, and with `--generate
+  5000`: each exits 1 with `cannot open`, `the ID at byte 4 is outside the vocabulary of
+  151936`, or `5013 positions are more than the 4096 this build's KV cache holds`.
 - **Greedy.** Run `$F --megakernel $P/tokens.txt > $EV/mega.stdout; echo exit=$?`. Expect
   `exit=0`, and `diff <(sed -n 's/^generated: //p' $EV/mega.stdout) $P/greedy.txt` to
   print nothing.
