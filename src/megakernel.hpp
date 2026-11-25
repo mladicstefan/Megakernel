@@ -31,6 +31,7 @@ struct MegaSync {
 template <DecoderConfig C>
 struct Megakernel {
     std::unique_ptr<MegaSync, CudaFree> sync;
+    std::unique_ptr<void, CudaFree>     partials; // each block's part of an attention softmax
     std::uint32_t                       epoch = 0; // what `arrived` was before the next launch
     std::unique_ptr<Trace, CudaFree>    operands;  // for decode_from; null until it is used
 

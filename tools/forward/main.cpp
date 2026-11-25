@@ -51,9 +51,12 @@ constexpr Tolerance kPerOpTolerance{.rel_l2 = 5e-4, .one_minus_cos = 1e-7, .kl =
 // Measured worst, with the engine's BF16 cache: rel L2 3.0e-2, 1-cosine 3.7e-4, KL 3.0e-4.
 constexpr Tolerance kExactTolerance{.rel_l2 = 5e-2, .one_minus_cos = 1e-3, .kl = 1e-3};
 // The megakernel against the reference pass, phase by phase: only the order of sums
-// differs. Measured worst: rel L2 3.9e-4 (kqv_out, where a different sum can flip a BF16
-// rounding in the cache; every other tensor is below 6e-6), 1-cosine 7.7e-8, KL 7.3e-11.
-constexpr Tolerance kMegakernelTolerance{.rel_l2 = 2e-3, .one_minus_cos = 5e-7, .kl = 1e-9};
+// differs. Measured worst over 600 positions: rel L2 5.7e-6, 1-cosine 2.4e-12, KL 1.6e-10.
+constexpr Tolerance kMegakernelTolerance{.rel_l2 = 5e-5, .one_minus_cos = 1e-10, .kl = 2e-9};
+// kqv_out has its own limits. K and V are rounded to BF16 on their way into the cache, so a
+// sum in another order can move a cache entry by one BF16 step. Measured worst: rel L2
+// 1.3e-3, 1-cosine 8.0e-7. With an F32 cache it is 3.7e-6, like the other tensors.
+constexpr Tolerance kMegakernelAttentionTolerance{.rel_l2 = 5e-3, .one_minus_cos = 5e-6, .kl = 0};
 
 struct Options {
     std::string                          model = MODEL_GGUF;
@@ -369,15 +372,19 @@ int run_megakernel(const Options& o, const std::vector<mk::Token>* prompt) {
     for (const Row& r : table.rows) {
         std::println("  {:<14} {:>7} {:>10.2e} {:>10.2e} {:>10.2e}  {}", r.name, r.tensors,
                      r.max_abs, r.rel_l2, 1 - r.cosine, r.worst);
-        ok = ok && r.rel_l2 <= kMegakernelTolerance.rel_l2 &&
-             1 - r.cosine <= kMegakernelTolerance.one_minus_cos;
+        const Tolerance& tol = r.name == "kqv_out" ? kMegakernelAttentionTolerance
+                                                   : kMegakernelTolerance;
+        ok = ok && r.rel_l2 <= tol.rel_l2 && 1 - r.cosine <= tol.one_minus_cos;
     }
     std::println("logits: the megakernel's token is the reference's at {} of {} positions, "
                  "largest KL {:.2e} nats",
                  top1_agree, steps, max_kl);
-    std::println("result: {} (limits: rel L2 {:.0e}, 1-cosine {:.0e}, KL {:.0e}, token equal)",
+    std::println("result: {} (limits: rel L2 {:.0e}, 1-cosine {:.0e}, KL {:.0e}, token equal; "
+                 "kqv_out rel L2 {:.0e}, 1-cosine {:.0e})",
                  ok ? "within tolerance" : "OUTSIDE TOLERANCE", kMegakernelTolerance.rel_l2,
-                 kMegakernelTolerance.one_minus_cos, kMegakernelTolerance.kl);
+                 kMegakernelTolerance.one_minus_cos, kMegakernelTolerance.kl,
+                 kMegakernelAttentionTolerance.rel_l2,
+                 kMegakernelAttentionTolerance.one_minus_cos);
     return ok ? 0 : 1;
 }
 
