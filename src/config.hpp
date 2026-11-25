@@ -40,8 +40,9 @@ struct EngineConfig {
     static constexpr bool          llama_cpu_rounding = false;
 
     using Gpu = Rtx4070TiSuper;
-    // 4 blocks of 256 threads per SM read memory as fast as 8 do (docs/PLAN.md, Phase B).
-    static constexpr unsigned blocks_per_sm = 4;
+    // Measured with the megakernel over 141 positions: 2.27 ms per step with 2 blocks per
+    // SM, 2.29 with 1, 2.30 with 3, 2.43 with 4. More than 4 do not fit on an SM.
+    static constexpr unsigned blocks_per_sm = 2;
     static constexpr unsigned threads       = 256;
     using RowKernel = RowDot8;
 };
