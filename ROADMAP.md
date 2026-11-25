@@ -55,21 +55,24 @@ One persistent CUDA kernel runs a whole decode step, with its schedule computed 
 time.
 
 **State on 2026-11-25:** a first megakernel exists (`src/megakernel.{hpp,cu}`). One launch
-runs a step as 170 phases with grid-wide barriers between them. Every phase matches the
+runs a step as 170 phases with grid-wide barriers between them, on a grid of 132 blocks (2
+per SM). Every phase matches the
 reference pass (within 6e-6, and 1.3e-3 for attention through the BF16 cache), and the
 three sanitizers are clean. Measured with `forward --megakernel` on the `planets` prompt:
 
 | Positions decoded | ms per step | tokens/s | llama.cpp CUDA |
 |---|---|---|---|
-| 141 | 2.43 | 410 | 381 (`tg128`) |
-| 1,037 | 2.56 | 390 | 369 (`tg1024`) |
-| 4,013 | 2.85 | 350 | not measured |
+| 141 | 2.31 | 433 | 381 (`tg128`) |
+| 1,037 | 2.40 | 416 | 369 (`tg1024`) |
+| 4,013 | 2.69 | 372 | not measured |
 
 It is past llama.cpp and short of the goal of 450. At the measured read rate one step's
-weights take 1.91 ms, so about 0.5 ms per step is something else: the 170 barriers, the
-launch and the token read-back. None of that is profiled yet. Still open from the list
-below: the configuration type, ops over compile-time tensors, a checked constexpr
-schedule, the watchdog test, and `engine <tokens.txt>`.
+weights take 1.91 ms, so about 0.4 ms per step is something else.
+
+What is a type or a checked constant now: the configuration (`MegakernelConfig`: KV
+format, context, GPU, grid, row kernel), the phases of a layer (`LayerPhases`, checked by
+`well_ordered`), and the row schedule (`rows_of`, checked by `partitions`). Still open
+from the list below: the watchdog test and `engine <tokens.txt>`.
 
 - **Configuration is a type.** One `struct` names the build's choices: the KV format, the
   GPU, the context length. The kernel is a template over it. `model.hpp` supplies the rest.
