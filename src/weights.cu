@@ -16,7 +16,7 @@ double seconds_since(Clock::time_point start) {
 
 // 4 blocks of 256 threads per SM. Measured on the 4070 Ti SUPER: 1 block reads at 422 GB/s,
 // 4 at 623, 8 at 615 (docs/PLAN.md, Phase B).
-constexpr unsigned kBlocks = BuildGpu::sms * 4;
+constexpr unsigned kBlocks = EngineConfig::Gpu::sms * 4;
 constexpr unsigned kThreads     = 256; // a multiple of 32: add_checksum reduces whole warps
 
 // Each tensor's offset and size in words. The kernel indexes this with a run-time tensor

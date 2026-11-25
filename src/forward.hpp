@@ -1,5 +1,5 @@
 #pragma once
-#include "kv_format.hpp"
+#include "config.hpp"
 #include "model.hpp"
 #include "weights.hpp"
 
@@ -135,33 +135,6 @@ struct Token {
         }
         return Token{static_cast<std::uint32_t>(id)};
     }
-};
-
-// What a decoder is compiled for. A configuration is a type with:
-// - Kv, the KV cache's format
-// - n_ctx, the positions the KV cache holds
-// - llama_cpu_rounding, whether the ops also round where llama.cpp's CPU backend rounds
-template <class C>
-concept DecoderConfig = KvFormat<typename C::Kv> && requires {
-    { C::n_ctx } -> std::convertible_to<std::uint32_t>;
-    { C::llama_cpu_rounding } -> std::convertible_to<bool>;
-};
-
-// The engine's own choices: FP32 arithmetic throughout, and a BF16 cache like the weights.
-struct EngineConfig {
-    using Kv = KvBF16;
-    // The roadmap measures up to 4,096 positions. The model allows 32,768, which would be
-    // 3.8 GB of cache.
-    static constexpr std::uint32_t n_ctx              = 4096;
-    static constexpr bool          llama_cpu_rounding = false;
-};
-
-// llama.cpp's CPU backend, reproduced: its F16 cache and its rounding. For the op-by-op
-// comparison with its dumps.
-struct LlamaCpuConfig {
-    using Kv = KvF16;
-    static constexpr std::uint32_t n_ctx              = EngineConfig::n_ctx;
-    static constexpr bool          llama_cpu_rounding = true;
 };
 
 // One sequence being decoded: its KV cache and the working memory of the current step, all

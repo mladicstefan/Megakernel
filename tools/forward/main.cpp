@@ -268,9 +268,9 @@ int run_megakernel(const Options& o, const std::vector<mk::Token>* prompt) {
     if (const auto* e = std::get_if<mk::CudaError>(&sms)) {
         return fail(*e);
     }
-    if (std::get<unsigned>(sms) != mk::BuildGpu::sms) {
+    if (std::get<unsigned>(sms) != C::Gpu::sms) {
         return fail(std::format("built for the {} ({} SMs), this GPU has {} SMs",
-                                mk::BuildGpu::name, mk::BuildGpu::sms, std::get<unsigned>(sms)));
+                                C::Gpu::name, C::Gpu::sms, std::get<unsigned>(sms)));
     }
     const auto weights = load_weights(o.model);
     if (!weights) {
