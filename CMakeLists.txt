@@ -86,10 +86,16 @@ if(MODEL_GGUF)
     DEPENDS gguf2hpp ${MODEL_GGUF}
     COMMENT "Generating model.hpp from ${MODEL_GGUF}"
   )
-  add_executable(engine src/main.cpp ${GEN_DIR}/model.hpp)
-  target_link_libraries(engine PRIVATE project_warnings)
+  # The device side: upload and kernels. nvcc compiles it as C++20.
+  add_library(weights STATIC src/weights.cu ${GEN_DIR}/model.hpp)
   # src: the generated header includes model_types.hpp from there.
-  target_include_directories(engine PRIVATE ${GEN_DIR} ${CMAKE_SOURCE_DIR}/src)
+  target_include_directories(weights PUBLIC ${GEN_DIR} ${CMAKE_SOURCE_DIR}/src)
+
+  add_executable(engine src/main.cpp ${GEN_DIR}/model.hpp)
+  # gguf_header: the engine checks its file with the reader's own parse() and hash.
+  target_link_libraries(engine PRIVATE weights gguf_header project_warnings)
+  # The file `engine` loads when run without an argument.
+  target_compile_definitions(engine PRIVATE MODEL_GGUF="${MODEL_GGUF}")
 else()
   message(WARNING "MODEL_GGUF not set: the engine target is not built")
 endif()
@@ -109,6 +115,20 @@ include(GoogleTest)
 add_executable(smoke_test tests/smoke_test.cpp)
 target_link_libraries(smoke_test PRIVATE GTest::gtest_main project_warnings)
 gtest_discover_tests(smoke_test)
+
+# The host side of the weights checksum. No GPU and no model.
+add_executable(checksum_test tests/checksum_test.cpp)
+target_include_directories(checksum_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(checksum_test PRIVATE GTest::gtest_main project_warnings)
+gtest_discover_tests(checksum_test)
+
+# The device side, on the model the engine is built for. Needs a GPU.
+if(MODEL_GGUF)
+  add_executable(weights_test tests/weights_test.cpp)
+  target_link_libraries(weights_test PRIVATE weights gguf_header GTest::gtest_main project_warnings)
+  target_compile_definitions(weights_test PRIVATE MODEL_GGUF="${MODEL_GGUF}")
+  gtest_discover_tests(weights_test)
+endif()
 
 set(TOY_GGUF ${CMAKE_SOURCE_DIR}/tests/data/toy.gguf)
 set(QWEN_GGUF ${CMAKE_SOURCE_DIR}/models/Qwen_Qwen3-0.6B-bf16.gguf)
