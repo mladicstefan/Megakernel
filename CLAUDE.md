@@ -17,11 +17,14 @@ Status and next steps: `ROADMAP.md` (milestones) and `docs/PLAN.md` (engine phas
 - `tools/gguf_header/`: `reader.{hpp,cpp}` (Cursor, MappedFile, `parse()`),
   `emitter.{hpp,cpp}` (`emit()`), `main.cpp` (the `gguf2hpp` CLI).
 - `src/`: the engine (`main.cpp`), `model_types.hpp` (the types generated headers use),
-  `weights.{hpp,cu}` (the weights on the GPU), `forward.{hpp,cu}` (the reference forward
-  pass, qwen3 only), and small headers: `checksum.hpp`, `numeric.hpp`, `compare.hpp`,
+  `weights.{hpp,cu}` (the weights on the GPU), `megakernel.{hpp,cu}` (one kernel launch
+  per decode step, qwen3 only), `forward.{hpp,cu}` (the reference forward pass it is checked
+  against), and small headers: `gpu.hpp` (the target GPU as a type), `kv_format.hpp` (KV
+  cache formats as types), `checksum.hpp`, `numeric.hpp`, `compare.hpp`,
   `verified_file.hpp`.
-- `tools/forward/`: the `forward` CLI, which decodes token IDs with the reference pass and
-  compares it with a llama.cpp dump. `tools/reference/`: the llama.cpp harness that makes
+- `tools/forward/`: the `forward` CLI, which decodes token IDs with the megakernel or the
+  reference pass, checks the first against the second, and the second against a llama.cpp
+  dump. `tools/reference/`: the llama.cpp harness that makes
   the dumps (its own CMake project).
 - `tests/`: `reader_test.cpp` and `emitter_test.cpp` (one gtest binary, `reader_test`),
   `checksum_test.cpp`, `numeric_test.cpp` and `compare_test.cpp` (one binary, `host_test`),
