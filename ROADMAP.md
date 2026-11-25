@@ -67,7 +67,19 @@ three sanitizers are clean. Measured with `forward --megakernel` on the `planets
 | 4,013 | 2.69 | 372 | not measured |
 
 It is past llama.cpp and short of the goal of 450. At the measured read rate one step's
-weights take 1.91 ms, so about 0.4 ms per step is something else.
+weights take 1.91 ms. Where the 2.27 ms of a step over 141 positions go, measured by
+building the kernel with parts switched off (scratch copies, three runs each):
+
+| Part | Time | At the read rate it would take |
+|---|---|---|
+| launch, token read-back and all 170 barriers | 0.14 ms | 0 |
+| the output matrix (311 MB) | 0.51 ms | 0.50 ms |
+| the layers' matrices (881 MB) | 1.57 ms | 1.41 ms |
+| attention, at about 70 positions | 0.08 ms | 0.01 ms |
+
+So the output matrix is at the limit, the layers are 11% above it, and 0.22 ms is not
+weight reading at all. The row kernel is not what limits the layers: kernels that read 8,
+16 or 32 bytes per lane all give 2.42 to 2.47 ms on the old grid.
 
 What is a type or a checked constant now: the configuration (`MegakernelConfig`: KV
 format, context, GPU, grid, row kernel), the phases of a layer (`LayerPhases`, checked by

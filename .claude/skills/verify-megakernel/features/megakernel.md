@@ -67,6 +67,11 @@ Preconditions:
 - The speed falls as the context grows, because attention reads the whole KV cache: 0.10
   ms per step more for every 1,000 positions (measured between 1,037 and 4,013). Report
   the number of positions with every tokens/s figure.
+- To see where a step's time goes, build scratch copies with parts switched off: `run_layer`
+  without the `Ps::run(s)` call leaves the barriers, and an empty row range in the logits
+  block removes the output matrix. Measured over 141 positions: 0.14 ms with neither (launch,
+  read-back and barriers), 0.65 ms with the output matrix only, 1.79 ms with the layers
+  only, 2.27 ms in full.
 - The first step of a process also loads the kernel, so a short run reads slower per step
   than a long one would at the same context. Compare runs of the same length.
 - With `--check` the `decode:` time includes uploading the reference's trace for every
