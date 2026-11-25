@@ -108,6 +108,10 @@ Agents write the code; the user directs, reviews pull requests and merges them.
   - Push the feature branch and open the pull request with `gh pr create --base <base>`.
     A session may keep building the next feature on top without waiting for review.
   - Never push to `master` and never merge. The user does both.
+  - While `gh` is not installed there are no pull requests. Then a session pushes each
+    feature branch and merges it into its local `master` with `git merge --no-ff`, in
+    stack order, so that every feature stays one merge commit. The user still pushes
+    `master`.
 - **Two sessions never edit the same files in the same checkout.** Parallel work goes in
   separate worktrees.
 - At the end of a milestone, update `ROADMAP.md`. For phase-level changes, update
