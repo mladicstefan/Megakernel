@@ -16,7 +16,7 @@ double seconds_since(Clock::time_point start) {
 
 // 4 blocks of 256 threads per SM. Measured on the 4070 Ti SUPER: 1 block reads at 422 GB/s,
 // 4 at 623, 8 at 615 (docs/PLAN.md, Phase B).
-constexpr unsigned kBlocksPerSm = 4;
+constexpr unsigned kBlocks = BuildGpu::sms * 4;
 constexpr unsigned kThreads     = 256; // a multiple of 32: add_checksum reduces whole warps
 
 // Each tensor's offset and size in words. The kernel indexes this with a run-time tensor
@@ -110,12 +110,15 @@ std::variant<Upload, CudaError> upload(HostWeights data) {
     return Upload{std::move(weights), seconds_since(start)};
 }
 
-std::variant<Checksums, CudaError> device_checksums(Weights w) {
+std::variant<unsigned, CudaError> device_sms() {
     int device = 0;
     int sms    = 0;
     MK_TRY(cudaGetDevice(&device));
     MK_TRY(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device));
+    return static_cast<unsigned>(sms);
+}
 
+std::variant<Checksums, CudaError> device_checksums(Weights w) {
     // One sum per tensor, then the layer probe's.
     constexpr std::size_t kSumBytes = (tensor_count + 1) * sizeof(std::uint64_t);
     void*                 p         = nullptr;
@@ -126,7 +129,7 @@ std::variant<Checksums, CudaError> device_checksums(Weights w) {
 
     Checksums  out{};
     const auto start = Clock::now();
-    checksum_kernel<<<static_cast<unsigned>(sms) * kBlocksPerSm, kThreads>>>(w, sums.get());
+    checksum_kernel<<<kBlocks, kThreads>>>(w, sums.get());
     MK_TRY(cudaGetLastError());
     MK_TRY(cudaDeviceSynchronize());
     out.seconds = seconds_since(start);

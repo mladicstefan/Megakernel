@@ -42,7 +42,6 @@ What is still decided at run time, and so breaks the rule today:
 
 - The reference pass passes each matrix's address, rows and columns to its kernel as
   arguments, and walks the layers in a host loop.
-- The checksum kernel asks the device for its SM count.
 
 ## Targets
 

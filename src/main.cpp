@@ -38,6 +38,17 @@ int main(int argc, char** argv) {
     std::println("file: {} verified ({} bytes, header hash {:#018x})", path, model::file_size,
                  model::hash);
 
+    // The kernels are compiled for one GPU's SM count. Refuse any other device.
+    const auto sms = mk::device_sms();
+    if (const auto* e = std::get_if<mk::CudaError>(&sms)) {
+        return cuda_failed(*e);
+    }
+    if (std::get<unsigned>(sms) != mk::BuildGpu::sms) {
+        std::println(stderr, "engine: built for the {} ({} SMs), this GPU has {} SMs",
+                     mk::BuildGpu::name, mk::BuildGpu::sms, std::get<unsigned>(sms));
+        return 1;
+    }
+
     const auto uploaded = mk::upload(file->weights());
     if (const auto* e = std::get_if<mk::CudaError>(&uploaded)) {
         return cuda_failed(*e);

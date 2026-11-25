@@ -26,6 +26,10 @@ engine prints how many of them match.
   message gguf2hpp prints for it, for example `not a GGUF file (bad magic) at byte 0`.
 - `weights-reject-missing`: a missing path exits 1 with `cannot open (...) at byte 0`.
 - `weights-usage`: more than one argument prints `usage: engine [model.gguf]` and exits 2.
+- `weights-gpu`: on a GPU whose SM count is not the one the build targets (`mk::BuildGpu`,
+  66 for the RTX 4070 Ti SUPER), the engine exits 1 with `built for the RTX 4070 Ti SUPER
+  (66 SMs), this GPU has <n> SMs` before it uploads anything. This cannot be driven on the
+  development machine, which has only that GPU.
 - `weights-negative-control`: `weights_test` uploads the file's bytes starting 32 bytes
   early, and no tensor's device checksum matches the file's.
 - `weights-memcheck`: `compute-sanitizer --tool memcheck` on the engine reports 0 errors.
