@@ -1,21 +1,13 @@
 #include "weights.hpp"
 
+#include "cuda_try.hpp"
+
 #include <chrono>
 #include <cstdint>
 #include <utility>
 
-#include <cuda_runtime.h>
-
 namespace mk {
 namespace {
-// Leaves the calling function with a CudaError when a CUDA call fails.
-#define MK_TRY(call)                                                                              \
-    do {                                                                                          \
-        if (const cudaError_t mk_try_e = (call); mk_try_e != cudaSuccess) {                       \
-            return CudaError{#call, cudaGetErrorString(mk_try_e)};                                \
-        }                                                                                         \
-    } while (false)
-
 using Clock = std::chrono::steady_clock;
 
 double seconds_since(Clock::time_point start) {

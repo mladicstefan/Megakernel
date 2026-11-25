@@ -96,6 +96,31 @@ if(MODEL_GGUF)
   target_link_libraries(engine PRIVATE weights gguf_header project_warnings)
   # The file `engine` loads when run without an argument.
   target_compile_definitions(engine PRIVATE MODEL_GGUF="${MODEL_GGUF}")
+
+  # The forward pass is written for one architecture, and model.hpp does not exist yet at
+  # configure time. So read general.architecture here: it is the first key of a GGUF, and
+  # file(STRINGS) returns the key and its value as two consecutive strings. A wrong guess
+  # cannot build the wrong thing: forward.hpp static_asserts the architecture.
+  file(STRINGS ${MODEL_GGUF} model_strings LIMIT_INPUT 4096 LIMIT_COUNT 8)
+  list(FIND model_strings "general.architecture" arch_key)
+  set(MODEL_ARCH "")
+  if(arch_key GREATER -1)
+    math(EXPR arch_value "${arch_key} + 1")
+    list(GET model_strings ${arch_value} MODEL_ARCH)
+  endif()
+  message(STATUS "MODEL_GGUF architecture: '${MODEL_ARCH}'")
+
+  if(MODEL_ARCH STREQUAL "qwen3")
+    # The reference forward pass, and the tool that checks it against llama.cpp's dumps.
+    add_library(forward_pass STATIC src/forward.cu ${GEN_DIR}/model.hpp)
+    target_link_libraries(forward_pass PUBLIC weights)
+
+    add_executable(forward tools/forward/main.cpp)
+    target_link_libraries(forward PRIVATE forward_pass gguf_header project_warnings)
+    target_compile_definitions(forward PRIVATE MODEL_GGUF="${MODEL_GGUF}")
+  else()
+    message(STATUS "No forward pass for this architecture: only the engine is built")
+  endif()
 else()
   message(WARNING "MODEL_GGUF not set: the engine target is not built")
 endif()
@@ -116,11 +141,12 @@ add_executable(smoke_test tests/smoke_test.cpp)
 target_link_libraries(smoke_test PRIVATE GTest::gtest_main project_warnings)
 gtest_discover_tests(smoke_test)
 
-# The host side of the weights checksum. No GPU and no model.
-add_executable(checksum_test tests/checksum_test.cpp)
-target_include_directories(checksum_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(checksum_test PRIVATE GTest::gtest_main project_warnings)
-gtest_discover_tests(checksum_test)
+# The engine's host-only code: the checksum, BF16 and the comparison metrics. No GPU and no
+# model.
+add_executable(host_test tests/checksum_test.cpp tests/numeric_test.cpp tests/compare_test.cpp)
+target_include_directories(host_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(host_test PRIVATE GTest::gtest_main project_warnings)
+gtest_discover_tests(host_test)
 
 # The device side, on the model the engine is built for. Needs a GPU.
 if(MODEL_GGUF)
@@ -128,6 +154,28 @@ if(MODEL_GGUF)
   target_link_libraries(weights_test PRIVATE weights gguf_header GTest::gtest_main project_warnings)
   target_compile_definitions(weights_test PRIVATE MODEL_GGUF="${MODEL_GGUF}")
   gtest_discover_tests(weights_test)
+endif()
+
+# The forward pass against llama.cpp's dump of the committed prompt. The dump is not in the
+# repo: tools/reference/run.sh writes it to a cache, and without it there is no test.
+if(TARGET forward)
+  file(STRINGS ${CMAKE_SOURCE_DIR}/tools/reference/build.sh llama_tag REGEX "^LLAMA_TAG=")
+  string(REPLACE "LLAMA_TAG=" "" llama_tag "${llama_tag}")
+  if(DEFINED ENV{XDG_CACHE_HOME})
+    set(cache_home $ENV{XDG_CACHE_HOME})
+  else()
+    set(cache_home $ENV{HOME}/.cache)
+  endif()
+  set(REFERENCE_DUMP ${cache_home}/megakernel/reference/${llama_tag}/planets)
+  set(planets ${CMAKE_SOURCE_DIR}/tests/data/reference/planets)
+  if(EXISTS ${REFERENCE_DUMP}/manifest.json)
+    add_test(NAME forward.each_op_matches_llama
+      COMMAND forward --compare ${REFERENCE_DUMP} --per-op ${planets}/tokens.txt)
+    add_test(NAME forward.exact_stays_close_to_llama
+      COMMAND forward --compare ${REFERENCE_DUMP} ${planets}/tokens.txt)
+  else()
+    message(STATUS "No llama.cpp dump at ${REFERENCE_DUMP}: the forward tests are not added")
+  endif()
 endif()
 
 set(TOY_GGUF ${CMAKE_SOURCE_DIR}/tests/data/toy.gguf)
