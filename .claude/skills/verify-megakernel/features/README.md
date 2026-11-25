@@ -51,3 +51,5 @@ these H2s, in order: `Sub-features`, `How to get to it (user POV)`,
   committed prompt, reproducible checksums, and greedy agreement with `llama-simple`.
 - [Weights upload](./weights-upload.md): the engine verifies its GGUF, uploads the tensor
   data to the GPU, proves the copy with per-tensor checksums, and rejects any other file.
+- [Forward pass](./forward-pass.md): the reference CUDA forward pass decodes token IDs,
+  matches llama.cpp's greedy tokens, and is compared with its dump tensor by tensor.

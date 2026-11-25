@@ -24,7 +24,8 @@ TEST(Bf16, WidensExactly) {
 }
 
 TEST(Bf16, AValueItCanHoldRoundsToItself) {
-    for (const float f : {0.0f, 1.0f, -2.0f, 0.15625f, 3.0e10f}) {
+    // Each has at most 8 significant bits.
+    for (const float f : {0.0f, 1.0f, -2.0f, 0.15625f, 0x1.8p+35f, 0x1.fep-20f}) {
         EXPECT_EQ(mk::round_to_bf16(f), f);
     }
     EXPECT_EQ(bits(mk::round_to_bf16(-0.0f)), 0x80000000u);
