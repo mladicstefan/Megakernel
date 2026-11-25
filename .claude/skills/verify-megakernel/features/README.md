@@ -47,3 +47,5 @@ these H2s, in order: `Sub-features`, `How to get to it (user POV)`,
   invalid keys and non-finite values are rejected.
 - [Build integration](./build-integration.md): `MODEL_GGUF` generates `model.hpp`, the
   engine builds, and edits rerun the right steps.
+- [Reference dumps](./reference-dumps.md): llama.cpp's per-layer tensors and logits for a
+  committed prompt, reproducible checksums, and greedy agreement with `llama-simple`.
