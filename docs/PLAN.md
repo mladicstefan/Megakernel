@@ -70,22 +70,74 @@ Achieved bandwidth is usually 80–90 % of nominal, so a realistic goal is about
     and commit only the manifest and checksums.
   - Which token sequence? A short fixed prompt, tokenized once and committed as IDs.
 
-### B. Weights on the GPU
+### B. Weights on the GPU (done 2026-11-25)
 
-- **Builds:** a runtime loader in the engine.
-  1. mmap the GGUF, reusing `MappedFile`.
-  2. Check the file size and XXH3 hash against `model::file_size` and `model::hash`.
-     This requires linking xxHash into the engine.
-  3. Copy `[data_start, end)` into one device allocation.
+- **Built:** a runtime loader in the engine: `src/weights.hpp`, `src/weights.cu`,
+  `src/checksum.hpp` and `src/main.cpp`.
+  1. `engine [path]` maps the GGUF with `MappedFile`. The default path is the configured
+     `MODEL_GGUF`.
+  2. It compares the file size with `model::file_size`, then runs the reader's `parse()`
+     and compares its XXH3 hash with `model::hash`. Any other file exits 1 before the GPU
+     is touched.
+  3. `upload()` copies `[data_start, file_size)` into one device allocation.
   
-  A tensor's device address is then `base + model::tensors[i].offset`, with the offset
-  known at compile time.
-- **Proof:** a device-side checksum of the copy equals the host-side one. Upload time is
-  measured (expect about 1.5 GB over PCIe 4.0 x16, roughly 0.1–0.3 s, estimated).
-- **Open questions:**
-  - A pinned staging buffer, or `cudaMemcpy` straight from the mapping?
-  - Upload `token_embd` (311 MB, of which decode reads one row per token), or keep it on
-    the host?
+  A tensor's device address is `base + model::tensors[i].offset`. `weights.hpp` asserts at
+  compile time that every offset is a multiple of `general.alignment`, and `upload()`
+  checks that the base is.
+- **What C is handed:**
+  - `mk::Weights`, a struct holding the device base pointer. Kernels take it by value.
+  - `mk::DeviceWeights` owns the allocation through a `unique_ptr` with a `cudaFree`
+    deleter. `view()` gives the `mk::Weights`.
+  - `mk::HostWeights` is a `std::span` of exactly `file_size - data_start` bytes.
+  - A failed CUDA call comes back as `mk::CudaError` in a `std::variant`, because nvcc
+    compiles the header as C++20 and `std::expected` is C++23.
+- **Proof:** a kernel computes a position-sensitive checksum of every tensor through
+  offsets fixed at compile time, and of `layers[27].q` through `model::layers`. The host
+  computes the same over the mapping. 311 of 311 match. With the upload shifted by 32
+  bytes, 0 of 311 match (`weights_test`). `compute-sanitizer --tool memcheck` reports 0
+  errors.
+- **Measured** on the RTX 4070 Ti SUPER. The PCIe link runs at generation 3 x16 during the
+  copy. 1,503,395,840 bytes.
+
+  | Measure | Estimate | Measured |
+  |---|---|---|
+  | upload, warm page cache | 0.12–0.14 s at 11–13 GB/s, pinned | 0.167 s, 9.0 GB/s, plain `cudaMemcpy` (median of 7 runs, 0.163 to 0.201 s) |
+  | upload, cold page cache | 0.4–0.75 s at 2–4 GB/s | 1.55 s, 0.97 GB/s (3 runs, 1.54 to 1.60 s) |
+  | checksum kernel | 2.5–2.8 ms at 80–90% of 672 GB/s | 2.41 ms, 623 GB/s, 93% (7 runs of 5 launches, 2.40 to 2.64 ms) |
+
+  - **Warm upload.** A pinned buffer that already holds the data copies at 13.1 GB/s, which
+    is the link's rate. The file's pages are in the page cache, not in pinned memory, so
+    every path that works copies them once on the host first. That host copy is the limit.
+  - **Cold upload.** The file read is the limit, not the copy: a cold `dd` of the model
+    alone reads at 1.0 GB/s. btrfs stores the model in 11,516 zstd-compressed extents
+    under LUKS. An uncompressed copy reads cold at 1.6 GB/s and uploads in 1.0 s. The NVMe
+    link runs at 8 GT/s x4. How the remaining time splits between LUKS and the drive was
+    not measured, because that needs root.
+  - **Checksum kernel.** A first measurement, not tuned: 4 blocks of 256 threads per SM,
+    each thread reading one 8-byte word per step. 1 block per SM reads at 422 GB/s, 2 at
+    583, 4 at 623 and 8 at 615, so past 4 blocks more threads do not help. That points at
+    memory bandwidth as the limit, but no profiler counter confirms it yet.
+- **Open questions, answered:**
+  - **The copy path is a plain `cudaMemcpy` from the mapping.** Measured warm, median of 7
+    interleaved runs, one process per run:
+
+    | Path | Time | Rate |
+    |---|---|---|
+    | plain `cudaMemcpy` from the pageable mapping | 0.169 s | 8.9 GB/s |
+    | `cudaHostRegister` with the read-only flag, then `cudaMemcpy` | fails | `operation not supported`: this GPU reports `cudaDevAttrHostRegisterReadOnlySupported` = 0 |
+    | `cudaHostRegister` on a writable private mapping, then `cudaMemcpy` | 0.858 s | 1.75 GB/s; registering alone takes 0.72 s |
+    | two pinned 32 MB staging buffers | 0.165 s, plus 0.039 s to allocate them | 9.1 GB/s |
+    | the same with 8 MB or 128 MB buffers | 0.229 s or 0.169 s | 6.6 or 8.9 GB/s |
+
+    The plain copy is within 3% of the fastest path that works and needs no setup. Cold,
+    all paths take 1.5 to 1.6 s.
+  - **`token_embd` is uploaded** with everything else. Keeping its 311 MB on the host is a
+    later optimisation.
+- **Limits:**
+  - Only the header is hashed, so a file with the same header and other tensor data
+    passes the check.
+  - The checksum reads whole 8-byte words. A model with a tensor that is not a whole
+    number of them fails a `static_assert` in `weights.hpp`.
 
 ### C. Reference CUDA forward pass
 
@@ -194,3 +246,4 @@ Each phase follows the same loop:
 | Date | Decision |
 |---|---|
 | 2026-11-25 | First target: decode, batch size 1, Qwen3-0.6B BF16, 4070 Ti SUPER. Reference: llama.cpp. No "mode A / mode B". The project is agentic from here on. |
+| 2026-11-25 | Phase B: the weights go to the GPU with a plain `cudaMemcpy` from the mmap, `token_embd` included. Pinned staging was within 3% and this GPU cannot register a read-only mapping. Kernels are handed `mk::Weights`. |

@@ -16,9 +16,10 @@ Status and next steps: `ROADMAP.md` (milestones) and `docs/PLAN.md` (engine phas
 
 - `tools/gguf_header/`: `reader.{hpp,cpp}` (Cursor, MappedFile, `parse()`),
   `emitter.{hpp,cpp}` (`emit()`), `main.cpp` (the `gguf2hpp` CLI).
-- `src/`: the engine (`main.cpp`) and `model_types.hpp` (the types generated headers use).
+- `src/`: the engine (`main.cpp`), `model_types.hpp` (the types generated headers use),
+  `weights.{hpp,cu}` (the weights on the GPU) and `checksum.hpp`.
 - `tests/`: `reader_test.cpp` and `emitter_test.cpp` (one gtest binary, `reader_test`),
-  `smoke_test.cpp`.
+  `checksum_test.cpp`, `weights_test.cpp` (needs `MODEL_GGUF` and a GPU), `smoke_test.cpp`.
 - `tests/data/`: `toy.gguf` (384 bytes, the main fixture), `make_test_gguf.py`, and a uv
   venv with gguf-py (`tests/data/.venv/bin/python -I`).
 - `models/`: real models, gitignored, may be missing. Tests that need one skip.
