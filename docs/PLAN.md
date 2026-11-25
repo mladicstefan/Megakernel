@@ -194,8 +194,10 @@ target has to settle.
   format has `Bits`, `store()` and `load()`, and the cache kernels are templates over it.
   F16, BF16 and F32 exist. All three generate llama.cpp's 32 tokens on `planets`
   (measured, as it runs): the worst attention difference is 1.4e-2 with F16 or F32 and
-  2.7e-2 with BF16. The build uses F16, because llama.cpp's dump was made with an F16
-  cache and the op-by-op comparison needs the same one.
+  2.7e-2 with BF16. The engine (`EngineConfig`) uses BF16, the weights' own format.
+  `LlamaCpuConfig` uses F16, because llama.cpp's dump was made with an F16 cache and the
+  op-by-op comparison needs the same one. With BF16 the comparison as it runs has worst
+  values of rel L2 3.0e-2, 1-cosine 3.7e-4 and KL 3.0e-4.
 - **Proof (measured, prompt `planets`, 14 tokens, 32 generated):**
   - The 32 greedy tokens equal `greedy.txt`. The top-1 token equals llama.cpp's at all 45
     positions.

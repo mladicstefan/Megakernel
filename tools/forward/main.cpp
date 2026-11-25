@@ -44,7 +44,7 @@ struct Tolerance {
 // Measured worst: rel L2 1.05e-4 (kqv_out; every other tensor is below 3e-6), 1-cosine
 // 5.4e-9, KL 4.2e-11.
 constexpr Tolerance kPerOpTolerance{.rel_l2 = 5e-4, .one_minus_cos = 1e-7, .kl = 1e-9};
-// Measured worst: rel L2 1.5e-2, 1-cosine 1.1e-4, KL 1.5e-4.
+// Measured worst, with the engine's BF16 cache: rel L2 3.0e-2, 1-cosine 3.7e-4, KL 3.0e-4.
 constexpr Tolerance kExactTolerance{.rel_l2 = 5e-2, .one_minus_cos = 1e-3, .kl = 1e-3};
 
 struct Options {

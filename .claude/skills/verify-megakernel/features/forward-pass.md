@@ -57,8 +57,8 @@ Preconditions:
   `diff <(sed -n 's/^generated: //p' $EV/greedy.stdout) $P/greedy.txt` prints nothing.
 - **Compare as it runs.** Run `$F --compare $R $P/tokens.txt > $EV/compare.stdout; echo
   exit=$?`. Expect `exit=0`, 20 table rows, `top-1 agrees at 45 of 45 positions`, and
-  `result: within tolerance`. Measured worst values: rel L2 1.5e-2, 1-cosine 1.1e-4, KL
-  1.5e-4.
+  `result: within tolerance`. Measured worst values, with the engine's BF16 cache: rel L2
+  3.0e-2, 1-cosine 3.7e-4, KL 3.0e-4.
 - **Compare op by op.** Run `$F --compare $R --per-op $P/tokens.txt > $EV/per-op.stdout;
   echo exit=$?`. Expect `exit=0` and `result: within tolerance`. `embd`, `Qcur_rope`,
   `Kcur_rope`, `ffn_inp` and `l_out` are exactly 0. `kqv_out` is the largest at about
