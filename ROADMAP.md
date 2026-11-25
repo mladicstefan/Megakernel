@@ -83,8 +83,9 @@ weight reading at all. The row kernel is not what limits the layers: kernels tha
 
 What is a type or a checked constant now: the configuration (`MegakernelConfig`: KV
 format, context, GPU, grid, row kernel), the phases of a layer (`LayerPhases`, checked by
-`well_ordered`), and the row schedule (`rows_of`, checked by `partitions`). Still open
-from the list below: the watchdog test and `engine <tokens.txt>`.
+`well_ordered`), and the row schedule (`rows_of`, checked by `partitions`).
+`engine --tokens <tokens.txt>` decodes through it. Still open from the list below: the
+watchdog test.
 
 - **Configuration is a type.** One `struct` names the build's choices: the KV format, the
   GPU, the context length. The kernel is a template over it. `model.hpp` supplies the rest.
@@ -93,7 +94,7 @@ from the list below: the watchdog test and `engine <tokens.txt>`.
   reference pass moves to the same templates.
 - **The schedule is a constexpr value**, checked by `static_assert`: no cycle, no two
   writers of one buffer.
-- **`engine <tokens.txt>` prints generated IDs**, through the megakernel.
+- **`engine --tokens <tokens.txt>` prints generated IDs**, through the megakernel.
 
 Done when, on the 4070 Ti SUPER and the Qwen3-0.6B BF16 file:
 

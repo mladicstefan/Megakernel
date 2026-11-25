@@ -115,6 +115,10 @@ if(MODEL_GGUF)
     add_library(forward_pass STATIC src/forward.cu src/megakernel.cu ${GEN_DIR}/model.hpp)
     target_link_libraries(forward_pass PUBLIC weights)
 
+    # The engine decodes through the megakernel when its model has a forward pass.
+    target_link_libraries(engine PRIVATE forward_pass)
+    target_compile_definitions(engine PRIVATE MK_ENGINE_DECODES)
+
     add_executable(forward tools/forward/main.cpp)
     target_link_libraries(forward PRIVATE forward_pass gguf_header project_warnings)
     target_compile_definitions(forward PRIVATE MODEL_GGUF="${MODEL_GGUF}")
@@ -158,6 +162,11 @@ endif()
 
 # The megakernel against the reference pass, phase by phase. Needs the model and a GPU.
 if(TARGET forward)
+  # The engine itself generates llama.cpp's first tokens for the committed prompt.
+  add_test(NAME engine.generates_the_reference_tokens
+    COMMAND engine --tokens ${CMAKE_SOURCE_DIR}/tests/data/reference/planets/tokens.txt --generate 8)
+  set_tests_properties(engine.generates_the_reference_tokens PROPERTIES
+    PASS_REGULAR_EXPRESSION "generated: \\[25, 362, 8, 43562, 11, 48976, 11, 9237\\]")
   add_test(NAME megakernel.each_phase_matches_reference
     COMMAND forward --megakernel --check ${CMAKE_SOURCE_DIR}/tests/data/reference/planets/tokens.txt)
   # Enough positions for an attention warp to sum more than one: with the default grid, any
