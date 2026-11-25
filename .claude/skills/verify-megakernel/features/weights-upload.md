@@ -70,7 +70,7 @@ Preconditions:
   and `[  PASSED  ] 2 tests.`
 - **Memcheck.** Run
   `compute-sanitizer --tool memcheck $S/engine-build/engine > $EV/memcheck.log 2>&1`.
-  Expect `311/311` and `ERROR SUMMARY: 0 errors`. It takes about 10 s.
+  Expect `311/311` and `ERROR SUMMARY: 0 errors`. It takes a few seconds.
 - **Toy.** Run the build-integration recipe on `$S/toy-copy.gguf` in a run of its own.
   Expect `checksums: 2/2 tensors match` and no `layers` text.
 - **Measurements.** Run `run-engine` seven times for the warm numbers. For a cold number,
