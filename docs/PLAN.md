@@ -95,8 +95,8 @@ target has to settle.
 
 ### B. Weights on the GPU (done 2026-11-25)
 
-- **Built:** a runtime loader in the engine: `src/weights.hpp`, `src/weights.cu`,
-  `src/checksum.hpp` and `src/main.cpp`.
+- **Built:** a runtime loader in the engine: `src/weights/weights.hpp`,
+  `src/weights/weights.cu`, `src/weights/checksum.hpp` and `apps/engine/main.cpp`.
   1. `engine [path]` maps the GGUF with `MappedFile`. The default path is the configured
      `MODEL_GGUF`.
   2. It compares the file size with `model::file_size`, then runs the reader's `parse()`
@@ -164,8 +164,8 @@ target has to settle.
 
 ### C. Reference CUDA forward pass (done 2026-11-25)
 
-- **Built:** `src/forward.{hpp,cu}` and the `forward` tool (`tools/forward/main.cpp`).
-  They exist only when `MODEL_GGUF` is a `qwen3` model.
+- **Built:** `src/reference/forward.{hpp,cu}` and the `forward` tool
+  (`apps/forward/main.cpp`). They exist only when `MODEL_GGUF` is a `qwen3` model.
   - One plain kernel per op, in FP32 over the BF16 weights: the embedding row, RMSNorm,
     the matrix-vector product, RoPE, the KV cache write, grouped-query attention, the
     residual add and SwiGLU. `decode()` launches them in the order of llama.cpp's qwen3
@@ -190,7 +190,7 @@ target has to settle.
     position's own K and V, read back from the cache.
   - RMSNorm multiplies by `1/sqrt(mean(x^2) + 1e-6)`, then by the weight. `q_norm` and
     `k_norm` apply per head, with one weight of 128 shared by the heads.
-- **The KV cache format is a compile-time type**, `mk::Kv` in `src/kv_format.hpp`. A
+- **The KV cache format is a compile-time type**, `mk::Kv` in `src/config/kv_format.hpp`. A
   format has `Bits`, `store()` and `load()`, and the cache kernels are templates over it.
   F16, BF16 and F32 exist. All three generate llama.cpp's 32 tokens on `planets`
   (measured, as it runs): the worst attention difference is 1.4e-2 with F16 or F32 and
@@ -305,8 +305,8 @@ target has to settle.
 
 - **Now:** A (doesn't touch the repo's C++), and D's design document. Each runs in its
   own worktree.
-- **After milestone 8 is merged:** B. It touches `src/main.cpp` and the engine part of
-  CMake, the same files milestone 8 edits.
+- **After milestone 8 is merged:** B. It touches `apps/engine/main.cpp` and the engine part
+  of CMake, the same files milestone 8 edits.
 - **After A and B:** C. **After C and D:** E.
 
 Each phase follows the same loop:

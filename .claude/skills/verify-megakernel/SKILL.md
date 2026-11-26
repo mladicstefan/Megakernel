@@ -1,6 +1,6 @@
 ---
 name: verify-megakernel
-description: Drive comptime-megakernel's build-time tool gguf2hpp (GGUF file in, C++ model header out) and the CMake engine build the way a user does, and capture proof. Use to prove a change to the reader, emitter, model_types.hpp, CMakeLists.txt or src/main.cpp works on real files, hostile files and the real build, beyond what ctest covers.
+description: Drive comptime-megakernel's build-time tool gguf2hpp (GGUF file in, C++ model header out) and the CMake engine build the way a user does, and capture proof. Use to prove a change to the reader, emitter, model_types.hpp, CMakeLists.txt or apps/engine/main.cpp works on real files, hostile files and the real build, beyond what ctest covers.
 ---
 
 # Verify megakernel

@@ -15,10 +15,10 @@ exactly the steps they affect.
   `main.cpp`.
 - `build-regen-tool`: changing the tool's sources rebuilds gguf2hpp, reruns generation, then
   recompiles `weights.cu` and `main.cpp`.
-- `build-main-only`: touching `src/main.cpp` rebuilds the engine without rerunning
+- `build-main-only`: touching `apps/engine/main.cpp` rebuilds the engine without rerunning
   generation or recompiling `weights.cu`.
-- `build-weights-only`: touching `src/weights.cu` recompiles it and relinks the engine
-  without recompiling `main.cpp`.
+- `build-weights-only`: touching `src/weights/weights.cu` recompiles it and relinks the
+  engine without recompiling `main.cpp`.
 
 ## How to get to it (user POV)
 
@@ -44,28 +44,28 @@ Preconditions:
   `Generating model.hpp`, then `Building ... weights.cu.o`, `Linking ... libweights.a`,
   `Building ... main.cpp.o` and `Linking ... engine`. Without a `Building` line, that
   file's dependency on the header is broken.
-- **Tool changed.** Run `touch tools/gguf_header/emitter.cpp`, then the same build. Expect
+- **Tool changed.** Run `touch src/gguf/emitter.cpp`, then the same build. Expect
   `Building ... emitter.cpp.o`, `Linking ... gguf2hpp`, `Generating model.hpp`, then the
   same four lines as for a changed model.
-- **Main changed.** Run `touch src/main.cpp`, then the same build. Expect
+- **Main changed.** Run `touch apps/engine/main.cpp`, then the same build. Expect
   `Building ... main.cpp.o` and `Linking ... engine`, with no `Generating` line and no
   `weights.cu.o` line.
-- **Weights changed.** Run `touch src/weights.cu`, then the same build. Expect
+- **Weights changed.** Run `touch src/weights/weights.cu`, then the same build. Expect
   `Building ... weights.cu.o`, `Linking ... libweights.a` and `Linking ... engine`, with no
   `Generating` line and no `main.cpp.o` line.
 - **Proof.** `engine.build.log`, `engine.stdout`, and the build lines from each touch step.
 
 ## Gotchas
 
-- `touch` on `src/main.cpp`, `src/weights.cu` or `emitter.cpp` changes only the file's
-  mtime, but the user's own `build/` will rebuild those files on its next build. Say so in
-  the report.
+- `touch` on `apps/engine/main.cpp`, `src/weights/weights.cu` or `src/gguf/emitter.cpp`
+  changes only the file's mtime, but the user's own `build/` will rebuild those files on its
+  next build. Say so in the report.
 - The engine uploads the model to the GPU, so running it needs a CUDA device. Without one
   it prints the first line and the `file:` line, then exits 1 with the failed CUDA call.
 - The `engine` target exists only when `MODEL_GGUF` is set. Configuring without it prints a
   CMake warning, and must still build every test target and pass ctest.
 - A file without `blk.<n>.*` tensors (toy) has no `model::layers`, and the engine must
-  still build for it. `src/weights.hpp` gives the name an empty table in that case. Engine
-  code that names `model::layers` must include it and must read a layer only when
+  still build for it. `src/weights/weights.hpp` gives the name an empty table in that case.
+  Engine code that names `model::layers` must include it and must read a layer only when
   `mk::layer_count > 0`, at compile time.
 - Pass an absolute `MODEL_GGUF`. `engine` resolves it with `realpath`; by hand, use `$PWD/...`.

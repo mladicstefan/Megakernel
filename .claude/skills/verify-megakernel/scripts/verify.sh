@@ -131,7 +131,7 @@ run-engine) # run-engine <name> [args]: run the engine that `engine` built; reco
     ;;
 gate) # gate: the megakernel's size on sm_89 and its speed, for the engine that `engine` built
     eb=$SCRATCH/engine-build g=$SCRATCH/gate cuda=$(dirname "$NVCC") P=$REPO/tests/data/reference/planets
-    obj=$eb/CMakeFiles/forward_pass.dir/src/megakernel.cu.o
+    obj=$eb/CMakeFiles/forward_pass.dir/src/megakernel/megakernel.cu.o
     [[ -f $obj ]] || { echo "FAIL no $obj: run engine with the Qwen model first"; exit 1; }
     cmake --build "$eb" -j --target forward >"$EVIDENCE/gate.build.log" 2>&1
     rm -rf "$g" && mkdir -p "$g"

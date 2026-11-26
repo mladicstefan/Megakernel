@@ -47,8 +47,8 @@ Preconditions:
 ## Gotchas
 
 - gguf-py writes strings as UTF-8, so `craft` can't produce invalid UTF-8 or a lone byte
-  0xFF. Those are covered by `tests/emitter_test.cpp` on hand-built models. A file-level
-  check would need patching the bytes after writing.
+  0xFF. Those are covered by `tests/gguf/emitter_test.cpp` on hand-built models. A
+  file-level check would need patching the bytes after writing.
 - Key segments that are C++ keywords, and keys that are both a leaf and a prefix, are
   accepted shortcuts: the header fails to compile instead of the tool refusing. Don't
   report them as new findings.
