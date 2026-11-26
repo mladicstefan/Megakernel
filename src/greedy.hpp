@@ -1,5 +1,6 @@
 #pragma once
 #include "megakernel.hpp"
+#include "positions.hpp"
 
 #include <charconv>
 #include <chrono>
@@ -49,12 +50,6 @@ inline std::expected<std::vector<Token>, std::string> read_tokens(const std::str
         return std::unexpected("no token IDs");
     }
     return out;
-}
-
-// The positions a prompt and `generate` more tokens take. The last generated token is
-// never decoded, so it needs no position.
-inline std::size_t positions(std::size_t prompt, std::size_t generate) {
-    return prompt + (generate > 0 ? generate - 1 : 0);
 }
 
 struct Generation {

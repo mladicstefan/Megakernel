@@ -145,9 +145,10 @@ add_executable(smoke_test tests/smoke_test.cpp)
 target_link_libraries(smoke_test PRIVATE GTest::gtest_main project_warnings)
 gtest_discover_tests(smoke_test)
 
-# The engine's host-only code: the checksum, BF16 and the comparison metrics. No GPU and no
-# model.
-add_executable(host_test tests/checksum_test.cpp tests/numeric_test.cpp tests/compare_test.cpp)
+# The engine's host-only code: the checksum, BF16, the comparison metrics and the position
+# count. No GPU and no model.
+add_executable(host_test tests/checksum_test.cpp tests/numeric_test.cpp tests/compare_test.cpp
+  tests/positions_test.cpp)
 target_include_directories(host_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(host_test PRIVATE GTest::gtest_main project_warnings)
 gtest_discover_tests(host_test)
@@ -167,6 +168,17 @@ if(TARGET forward)
     COMMAND engine --tokens ${CMAKE_SOURCE_DIR}/tests/data/reference/planets/tokens.txt --generate 8)
   set_tests_properties(engine.generates_the_reference_tokens PROPERTIES
     PASS_REGULAR_EXPRESSION "generated: \\[25, 362, 8, 43562, 11, 48976, 11, 9237\\]")
+  # A count whose positions wrap in size_t is refused, and one past SIZE_MAX does not parse.
+  add_test(NAME engine.refuses_a_count_that_wraps
+    COMMAND engine --tokens ${CMAKE_SOURCE_DIR}/tests/data/reference/planets/tokens.txt
+            --generate 18446744073709551613)
+  set_tests_properties(engine.refuses_a_count_that_wraps PROPERTIES PASS_REGULAR_EXPRESSION
+    "positions are more than the [0-9]+ this build's KV cache holds")
+  add_test(NAME engine.refuses_a_count_past_size_max
+    COMMAND engine --tokens ${CMAKE_SOURCE_DIR}/tests/data/reference/planets/tokens.txt
+            --generate 99999999999999999999999)
+  set_tests_properties(engine.refuses_a_count_past_size_max PROPERTIES PASS_REGULAR_EXPRESSION
+    "^usage: engine")
   add_test(NAME megakernel.each_phase_matches_reference
     COMMAND forward --megakernel --check ${CMAKE_SOURCE_DIR}/tests/data/reference/planets/tokens.txt)
   # Enough positions for an attention warp to sum more than one: with the default grid, any

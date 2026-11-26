@@ -88,9 +88,10 @@ std::optional<Options> parse_args(std::span<char*> args) {
                 o.model = v;
             } else if (a == "--compare") {
                 o.compare = v;
-            } else if (std::from_chars(v.data(), v.data() + v.size(), o.generate).ptr !=
-                       v.data() + v.size()) {
-                return std::nullopt;
+            } else if (const auto [end, ec] = std::from_chars(v.data(), v.data() + v.size(),
+                                                              o.generate);
+                       ec != std::errc{} || end != v.data() + v.size()) {
+                return std::nullopt; // ec is set for no digits and for a value past SIZE_MAX
             }
         } else if (!a.starts_with("--") && o.tokens.empty()) {
             o.tokens = a;
@@ -352,10 +353,9 @@ int run_megakernel(const Options& o, const std::vector<mk::Token>* prompt) {
 // Decodes with the decoder that is compiled for configuration C.
 template <mk::DecoderConfig C>
 int run(const Options& o, const std::vector<mk::Token>* prompt) {
-    // A dump has the layers of the prompt's positions only, so --per-op stops there. The
-    // last generated token is never decoded, so it needs no position.
+    // A dump has the layers of the prompt's positions only, so --per-op stops there.
     const std::size_t generate = o.per_op ? 1 : o.generate;
-    const std::size_t steps    = prompt->size() + (generate > 0 ? generate - 1 : 0);
+    const std::size_t steps    = mk::positions(prompt->size(), generate);
     if (steps > C::n_ctx) {
         return fail(std::format("{} positions are more than the {} this build's KV cache holds",
                                 steps, C::n_ctx));
