@@ -2,6 +2,7 @@
 #include "megakernel/megakernel.hpp"
 #include "reference/compare.hpp"
 #include "reference/forward.hpp"
+#include "weights/verified_device.hpp"
 #include "weights/verified_file.hpp"
 
 #include <algorithm>
@@ -226,13 +227,9 @@ int run_megakernel(const Options& o, const std::vector<mk::Token>* prompt) {
         return fail(std::format("{} positions are more than the {} this build's KV cache holds",
                                 steps, C::n_ctx));
     }
-    const auto sms = mk::device_sms();
-    if (const auto* e = std::get_if<mk::CudaError>(&sms)) {
-        return fail(*e);
-    }
-    if (std::get<unsigned>(sms) != C::Gpu::sms) {
-        return fail(std::format("built for the {} ({} SMs), this GPU has {} SMs",
-                                C::Gpu::name, C::Gpu::sms, std::get<unsigned>(sms)));
+    const auto device = mk::VerifiedDevice<C::Gpu>::check();
+    if (!device) {
+        return fail(device.error());
     }
     const auto weights = load_weights(o.model);
     if (!weights) {
@@ -241,7 +238,7 @@ int run_megakernel(const Options& o, const std::vector<mk::Token>* prompt) {
     std::println("forward: {} prompt tokens, {} to generate, megakernel{}", prompt->size(),
                  o.generate, o.check ? ", each phase on the reference pass's operands" : "");
     if (!o.check) {
-        const auto g = mk::generate_greedy<C>(weights->view(), *prompt, o.generate);
+        const auto g = mk::generate_greedy<C>(*device, weights->view(), *prompt, o.generate);
         if (!g) {
             return fail(g.error());
         }
@@ -252,7 +249,7 @@ int run_megakernel(const Options& o, const std::vector<mk::Token>* prompt) {
 
     auto made_decoder   = mk::Decoder<C>::make(weights->view());
     auto made_reference = mk::Decoder<C>::make(weights->view());
-    auto made_kernel    = mk::Megakernel<C>::make();
+    auto made_kernel    = mk::Megakernel<C>::make(*device);
     for (const auto* e : {std::get_if<mk::CudaError>(&made_decoder),
                           std::get_if<mk::CudaError>(&made_reference)}) {
         if (e != nullptr) {

@@ -1,4 +1,5 @@
 #include "model.hpp"
+#include "weights/verified_device.hpp"
 #include "weights/verified_file.hpp"
 #include "weights/weights.hpp"
 #ifdef MK_ENGINE_DECODES
@@ -61,8 +62,10 @@ std::optional<Options> parse_args(std::span<char*> args) {
     return o;
 }
 
+using Device = mk::VerifiedDevice<mk::EngineConfig::Gpu>;
+
 // Decodes the prompt in the token file greedily through the megakernel.
-int decode(mk::Weights weights, const Options& o) {
+int decode(const Device& device, mk::Weights weights, const Options& o) {
 #ifdef MK_ENGINE_DECODES
     using C           = mk::EngineConfig;
     const auto prompt = mk::read_tokens(o.tokens);
@@ -77,7 +80,7 @@ int decode(mk::Weights weights, const Options& o) {
                      steps, C::n_ctx);
         return 1;
     }
-    const auto g = mk::generate_greedy<C>(weights, *prompt, o.generate);
+    const auto g = mk::generate_greedy<C>(device, weights, *prompt, o.generate);
     if (!g) {
         std::println(stderr, "engine: {}", g.error());
         return 1;
@@ -86,6 +89,7 @@ int decode(mk::Weights weights, const Options& o) {
     mk::print_speed(*g);
     return 0;
 #else
+    static_cast<void>(device);
     static_cast<void>(weights);
     std::println(stderr, "engine: {}: this build cannot decode: it has no forward pass for a "
                          "'{}' model",
@@ -117,13 +121,9 @@ int main(int argc, char** argv) {
                  model::hash);
 
     // The kernels are compiled for one GPU's SM count. Refuse any other device.
-    const auto sms = mk::device_sms();
-    if (const auto* e = std::get_if<mk::CudaError>(&sms)) {
-        return cuda_failed(*e);
-    }
-    if (std::get<unsigned>(sms) != mk::EngineConfig::Gpu::sms) {
-        std::println(stderr, "engine: built for the {} ({} SMs), this GPU has {} SMs",
-                     mk::EngineConfig::Gpu::name, mk::EngineConfig::Gpu::sms, std::get<unsigned>(sms));
+    const auto gpu = Device::check();
+    if (!gpu) {
+        std::println(stderr, "engine: {}", gpu.error());
         return 1;
     }
 
@@ -135,7 +135,7 @@ int main(int argc, char** argv) {
     std::println("upload: {} bytes in {:.3f} s, {:.2f} GB/s", mk::weights_size, up.seconds,
                  static_cast<double>(mk::weights_size) / up.seconds / kBytesPerGB);
     if (options->tokens != nullptr) {
-        return decode(up.weights.view(), *options);
+        return decode(*gpu, up.weights.view(), *options);
     }
 
     const auto          host   = mk::host_checksums(file->weights());

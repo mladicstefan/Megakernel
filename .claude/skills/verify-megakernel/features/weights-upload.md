@@ -31,7 +31,8 @@ engine prints how many of them match.
   66 for the RTX 4070 Ti SUPER), the engine exits 1 with `built for the RTX 4070 Ti SUPER
   (66 SMs), this GPU has <n> SMs` before it uploads anything. On the development machine,
   which has only that GPU, drive it with a `-DMK_GPU=Rtx5070` build: `built for the RTX
-  5070 (48 SMs), this GPU has 66 SMs`.
+  5070 (48 SMs), this GPU has 66 SMs`. The check is `mk::VerifiedDevice<G>::check()`, and
+  `weights_test` drives its refusal with a GPU type of 0 SMs.
 - `weights-negative-control`: `weights_test` uploads the file's bytes starting 32 bytes
   early, and no tensor's device checksum matches the file's.
 - `weights-memcheck`: `compute-sanitizer --tool memcheck` on the engine reports 0 errors.
