@@ -74,6 +74,25 @@ Preconditions:
   `compute-sanitizer --tool <tool> $F --megakernel --generate 3 $P/tokens.txt >
   $EV/mega-<tool>.log 2>&1`. Expect `generated: [25, 362, 8]` and `0 errors` or `0
   hazards`. `racecheck` takes about 4 minutes; the others take seconds.
+- **Other shapes.** Give each model its own `RUN_ID`. Run `RUN_ID=<id> $V craft qwen3 m
+  <embd> <ff> <heads> <kv_heads> <head_dim> <layers> <vocab> [align=<n>] [pad8]`, then
+  `RUN_ID=<id> $V engine $S/craft/m.gguf` and `cmake --build $S/engine-build -j --target
+  forward`. Run `$F --megakernel --check --generate <n> $S/craft/m.gguf.tokens.txt`, and
+  compare the `generated:` line of `RUN_ID=<id> $V run-engine decode --tokens
+  $S/craft/m.gguf.tokens.txt --generate <n>` with that of `$F --generate <n>
+  $S/craft/m.gguf.tokens.txt`, the reference pass. The grid needs `heads / kv_heads *
+  head_dim` to be 256 and every width to be a multiple of 256. Measured on 2026-11-26:
+  - `512 1536 4 2 128 2 1024`: within tolerance with `--generate 700`, and the same 700
+    tokens.
+  - `512 1536 8 2 64 2 1024`: within tolerance with `--generate 498`, `kqv_out` outside it
+    with `--generate 700` (rel L2 1.6e-1). From position 512 on, `attention_merge` has 4
+    query heads of more than 64 members to load, and 256 threads.
+  - `512 512 8 4 128 2 1024`: `--generate 32` fails with `an illegal memory access was
+    encountered`. The shared buffer `xs` holds `ff` floats, and the output projection
+    loads `heads * head_dim`.
+  - `512 1536 4 2 128 2 1024 align=8 pad8`: the engine builds and its checksums match,
+    then `--tokens` fails with `misaligned address`. The row kernel loads 16-byte words, and
+    every matrix starts 8 bytes past a multiple of 16.
 - **Proof.** The `.stdout` files and the three sanitizer logs.
 
 ## Gotchas
