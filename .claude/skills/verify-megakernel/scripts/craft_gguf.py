@@ -8,9 +8,12 @@ exactly these bytes. The expected bytes are spelled as char arrays, not as escap
 so the check does not reuse the emitter's escaping.
 
 qwen3 takes <embd> <ff> <heads> <kv_heads> <head_dim> <layers> <vocab> [align=<n>] [pad8]
-and writes a qwen3 model of that shape with random weights, for building the engine for
-it. align=<n> sets general.alignment, and pad8 puts an 8-byte tensor before the others. It
-also writes <out>.tokens.txt: 14 token IDs inside the vocabulary.
+[ctx=<n>] [arch-last] [sparse] and writes a qwen3 model of that shape with random weights,
+for building the engine for it. align=<n> sets general.alignment, pad8 puts an 8-byte tensor
+before the others, ctx=<n> sets qwen3.context_length (default 40960), arch-last writes
+general.architecture after every other key, and sparse writes no tensor data: the file is
+extended to its size, reads as zeros, and is only for building. It also writes
+<out>.tokens.txt: 14 token IDs inside the vocabulary.
 """
 
 import math
@@ -35,13 +38,17 @@ def qwen3(w: GGUFWriter, args: list[str]) -> str:
     embd, ff, heads, kv_heads, head_dim, layers, vocab = map(int, args[:7])
     options = args[7:]
     rng = np.random.default_rng(0)
+    ctx = 40960
+    sparse = "sparse" in options
     for o in options:
         if o.startswith("align="):
             w.add_custom_alignment(int(o.removeprefix("align=")))
-        elif o != "pad8":
+        elif o.startswith("ctx="):
+            ctx = int(o.removeprefix("ctx="))
+        elif o not in ("pad8", "arch-last", "sparse"):
             sys.exit(f"unknown qwen3 option {o}")
     w.add_uint32("qwen3.block_count", layers)
-    w.add_uint32("qwen3.context_length", 40960)
+    w.add_uint32("qwen3.context_length", ctx)
     w.add_uint32("qwen3.embedding_length", embd)
     w.add_uint32("qwen3.feed_forward_length", ff)
     w.add_uint32("qwen3.attention.head_count", heads)
@@ -50,14 +57,24 @@ def qwen3(w: GGUFWriter, args: list[str]) -> str:
     w.add_uint32("qwen3.attention.value_length", head_dim)
     w.add_float32("qwen3.rope.freq_base", 1e6)
     w.add_float32("qwen3.attention.layer_norm_rms_epsilon", 1e-6)
+    if "arch-last" in options:
+        kv = w.kv_data[0]
+        kv["general.architecture"] = kv.pop("general.architecture")
 
     def matrix(name: str, cols: int, rows: int, scale: float) -> None:
+        if sparse:
+            w.add_tensor_info(name, (rows, cols), np.dtype(np.uint16), rows * cols * 2,
+                              raw_dtype=GGMLQuantizationType.BF16)
+            return
         a = rng.standard_normal((rows, cols), dtype=np.float32) * scale
         w.add_tensor(
             name, quantize(a, GGMLQuantizationType.BF16), raw_dtype=GGMLQuantizationType.BF16
         )
 
     def norm(name: str, n: int) -> None:
+        if sparse:
+            w.add_tensor_info(name, (n,), np.dtype(np.float32), n * 4)
+            return
         w.add_tensor(name, (1 + 0.1 * rng.standard_normal(n)).astype(np.float32))
 
     if "pad8" in options:
@@ -109,7 +126,13 @@ def main() -> None:
         sys.exit(f"unknown kind {kind}")
     w.write_header_to_file()
     w.write_kv_data_to_file()
-    w.write_tensors_to_file()
+    if kind == "qwen3" and "sparse" in sys.argv[3:]:
+        w.write_ti_data_to_file()
+        f, pad = w.fout[0], GGUFWriter.ggml_pad
+        f.truncate(pad(f.tell(), w.data_alignment) +
+                   sum(pad(t.nbytes, w.data_alignment) for t in w.tensors[0].values()))
+    else:
+        w.write_tensors_to_file()
     w.close()
     if check:
         Path(f"{out}.check.hpp").write_text("#include <string_view>\n" + "\n".join(check) + "\n")

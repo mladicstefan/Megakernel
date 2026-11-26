@@ -76,6 +76,12 @@ MK_HOST_DEVICE constexpr std::uint64_t megakernel_shared_bytes(unsigned widest,
     return 4 * values;
 }
 
+// Whether a block's static shared memory is within CUDA's 48 KB for __shared__ variables, on
+// every GPU. Only dynamic shared memory, which a kernel opts into, may use more of an SM.
+MK_HOST_DEVICE constexpr bool fits_static_shared_memory(std::uint64_t block_bytes) {
+    return block_bytes <= 48 * 1024;
+}
+
 // Whether blocks_per_sm blocks of block_bytes static shared memory each are resident on one
 // SM at once, with the driver keeping reserved_per_block of shared_per_sm for each.
 MK_HOST_DEVICE constexpr bool fits_shared_memory(unsigned blocks_per_sm,

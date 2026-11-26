@@ -9,7 +9,7 @@ The engine is compiled for one model, one GPU and one configuration. Anything th
 the build fixes is a type or a constant, never a run-time value:
 
 - tensor offsets, shapes and dtypes (from `model.hpp`)
-- the layer count and every dimension
+- the layer count and every dimension (a model type that satisfies `mk::ModelSpec`)
 - the KV cache format (`mk::Kv`, a type that satisfies `mk::KvFormat`)
 - the GPU (SM count, architecture) and the context length
 - the schedule: which SM runs which piece of work, in which order
@@ -81,8 +81,9 @@ So the output matrix is at the limit, the layers are 11% above it, and 0.22 ms i
 weight reading at all. The row kernel is not what limits the layers: kernels that read 8,
 16 or 32 bytes per lane all give 2.42 to 2.47 ms on the old grid.
 
-What is a type or a checked constant now: the configuration (`MegakernelConfig`: KV
-format, context, GPU, grid, row kernel), the phases of a layer (`LayerPhases`, checked by
+What is a type or a checked constant now: the configuration (`MegakernelConfig`: model,
+KV format, context, GPU, grid, row kernel), the model (`ModelSpec`: `Qwen3`, read from
+`model.hpp`), the phases of a layer (`LayerPhases`, checked by
 `well_ordered`), and the row schedule (`rows_of`, checked by `partitions`).
 `engine --tokens <tokens.txt>` decodes through it. Still open from the list below: the
 watchdog test.
@@ -120,7 +121,8 @@ tokens/s are measured, and a prompt of the full context length runs without erro
 
 - the RTX 5070 (48 SMs, sm_120) as a second GPU type (the type exists and
   `-DMK_GPU=Rtx5070` compiles; it has not run, and its capacity is not measured)
-- a second Qwen3 size, and one quantized format
+- a second Qwen3 size, and one quantized format (a qwen3 model of another shape builds and
+  runs with only `-DMODEL_GGUF`, checked on crafted files; no real second size has run)
 
 Done when each needs only a different `model.hpp` and configuration type, with no edit to
 kernel code, and each has its own measured table.
@@ -139,4 +141,3 @@ kernel code, and each has its own measured table.
 - The checksum reads whole 8-byte words: a tensor that is not a whole number of them
   fails a `static_assert`.
 - The reference pass is checked on one prompt.
-- CMake finds the architecture by reading the first 4096 bytes of the GGUF.

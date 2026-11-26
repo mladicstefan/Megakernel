@@ -82,15 +82,34 @@ Preconditions:
   $EV/mega-<tool>.log 2>&1`. Expect `generated: [25, 362, 8]` and `0 errors` or `0
   hazards`. `racecheck` takes about 4 minutes; the others take seconds.
 - **Other shapes.** Give each model its own `RUN_ID`. Run `RUN_ID=<id> $V craft qwen3 m
-  <embd> <ff> <heads> <kv_heads> <head_dim> <layers> <vocab> [align=<n>] [pad8]`, then
+  <embd> <ff> <heads> <kv_heads> <head_dim> <layers> <vocab> [options]` (see `craft` in
+  SKILL.md), then
   `RUN_ID=<id> $V engine $S/craft/m.gguf` and `cmake --build $S/engine-build -j --target
   forward`. Run `$F --megakernel --check --generate <n> $S/craft/m.gguf.tokens.txt`, and
   compare the `generated:` line of `RUN_ID=<id> $V run-engine decode --tokens
   $S/craft/m.gguf.tokens.txt --generate <n>` with that of `$F --generate <n>
-  $S/craft/m.gguf.tokens.txt`, the reference pass. The grid needs `heads / kv_heads *
-  head_dim` to be 256 and every width to be a multiple of 256. Each fact the grid relies on
-  is its own `static_assert` in `megakernel.cu`, over a proof in `schedule.hpp`, so a shape
-  that breaks one fails to build with that fact's message. Measured on 2026-11-26:
+  $S/craft/m.gguf.tokens.txt`, the reference pass. No source edit: the model type reads
+  the shape from `model.hpp`, a block has `heads / kv_heads * head_dim` threads (the PTX's
+  `.maxntid` in `megakernel.cu.o`), and the KV cache holds 4,096 positions or the
+  `context_length` if fewer (the `positions are more than the <n>` refusal prints it). Every
+  width must be a multiple of 256 and `head_dim` of 32. Each fact the grid relies on is its
+  own `static_assert` in `megakernel.cu`, over a proof in `schedule.hpp`, so a shape that
+  breaks one fails to build with that fact's message. Measured on 2026-11-26, after the
+  model became a type:
+  - `512 1536 4 2 64 2 1024`: 128 threads. Within tolerance with `--generate 700`
+    (`kqv_out` rel L2 6.4e-5), and the same 700 tokens.
+  - `512 1536 4 4 128 2 1024`, one query head per KV head: 128 threads. Within tolerance
+    with `--generate 700` (`kqv_out` 5.9e-5), and the same 700 tokens.
+  - `512 1536 16 2 64 2 1024`: 512 threads. Within tolerance with `--generate 700`
+    (`kqv_out` 7.6e-7), and the same 700 tokens.
+  - `512 1536 4 2 128 2 1024 ctx=2048`: 256 threads, a cache of 2,048 positions. Within
+    tolerance with `--generate 2000` (`kqv_out` 4.4e-4), and the same 2,000 tokens.
+  - `2560 9728 32 8 128 36 151936 sparse`, Qwen3-4B's shape: `engine` fails to build with
+    `static assertion failed with "the megakernel's static shared memory for this model is
+    more than the 48 KB CUDA gives a block: ..."` and no other error. 512 threads and an
+    `xs` of 9,728 floats make 76 KB.
+  Measured on 2026-11-26 before the model became a type; each derives 256 threads, the
+  number typed by hand then:
   - `512 1536 4 2 128 2 1024`: within tolerance with `--generate 700`, and the same 700
     tokens.
   - `512 1536 8 2 64 2 1024`: within tolerance with `--generate 700` (`kqv_out` rel L2
@@ -103,18 +122,15 @@ Preconditions:
     assertion failed with "general.alignment is not a multiple of the row kernel's
     alignment"`. The row kernel loads 16-byte words, and every matrix starts 8 bytes past
     a multiple of 16.
-  - `512 1536 4 2 64 2 1024`: `engine` fails to build with `static assertion failed with
-    "attention needs one thread per dimension of each query head of a group: set threads
-    to n_head / n_head_kv * head_dim"`, and no other error. `heads / kv_heads * head_dim`
-    is 128, and the grid has 256 threads.
 - **Capacity.** In a scratch copy (`git archive HEAD | tar -x -C $S/cap`), make one edit,
   then configure it for Qwen and build `engine`:
   - `blocks_per_sm = 5` in `Rtx4070TiSuper` (`src/config/gpu.hpp`): `static assertion
     failed with "blocks_per_sm blocks of the megakernel's static shared memory do not fit
     in the shared memory of one SM: lower the GPU type's blocks_per_sm"`. Five blocks of
     23,408 bytes plus 1,024 reserved each are 122,160, above 102,400.
-  - `n_ctx = 65536` in `EngineConfig`: `"n_ctx is more positions than the model's
-    context_length: lower n_ctx"`. Qwen's `context_length` is 32,768.
+  - `n_ctx = 65536` in `EngineConfig` (`src/config/config.hpp`), in place of the `std::min`:
+    `"n_ctx is more positions than the model's context_length: lower n_ctx"`. Qwen's
+    `context_length` is 32,768.
   - `n_ctx = 1u << 20`: that message and `"the weights and a KV cache of n_ctx positions do
     not fit in the GPU's device memory: lower n_ctx"`. The cache alone would be 120 GB.
   Measured on 2026-11-26. `schedule_test` feeds each proof failing numbers.
@@ -143,8 +159,9 @@ Preconditions:
   their way into the cache. A sum in another order can move a value across a rounding
   boundary, which changes one cache entry by one BF16 step. With an F32 cache
   (`EngineConfig::Kv = KvF32`, in a scratch copy) `kqv_out` is at 3.7e-6.
-- The grid is 132 blocks of 256 threads (`Rtx4070TiSuper::blocks_per_sm` is 2, on 66 SMs),
-  and every barrier waits for all of them. 5 or more blocks per SM fail to build: their
+- The grid is 132 blocks (`Rtx4070TiSuper::blocks_per_sm` is 2, on 66 SMs) of 256 threads
+  for Qwen3-0.6B, and every barrier waits for all of them. The threads come from the model,
+  so `blocks_per_sm` was measured with 256 threads only. 5 or more blocks per SM fail to build: their
   shared memory does not fit in an SM (see Capacity). `Megakernel::make` still fails with
   `the GPU cannot keep the whole grid resident` if the device cannot run that many blocks
   per SM at once, and with `its static shared memory is not what megakernel_shared_bytes in

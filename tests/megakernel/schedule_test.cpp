@@ -140,6 +140,16 @@ TEST(SharedMemory, UpToFourBlocksOfQwenFitAnSm) {
     EXPECT_FALSE(mk::fits_shared_memory(5, qwen_shared_bytes(5), kReserved, kSharedPerSm));
 }
 
+TEST(SharedMemory, StaticSharedMemoryStopsAt48KB) {
+    EXPECT_TRUE(mk::fits_static_shared_memory(qwen_shared_bytes(2)));
+    EXPECT_TRUE(mk::fits_static_shared_memory(48 * 1024));
+    EXPECT_FALSE(mk::fits_static_shared_memory(48 * 1024 + 1));
+    // Qwen3-4B, even at 1 block per SM: 32 query heads on 8 KV heads of 128 dimensions make
+    // 512 threads, and the feed-forward width is 9,728. 75,712 bytes.
+    EXPECT_FALSE(mk::fits_static_shared_memory(
+        mk::megakernel_shared_bytes(9728, 512 / 32, 32 / 8, kHeadDim, 66 / 8)));
+}
+
 TEST(SharedMemory, TheDriversReservePerBlockCounts) {
     // 4 blocks of 25,000 bytes are 100,000 bytes, and 104,096 with the reserve.
     EXPECT_TRUE(mk::fits_shared_memory(4, 25000, 0, kSharedPerSm));

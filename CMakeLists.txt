@@ -88,6 +88,11 @@ target_link_libraries(gguf_header PRIVATE project_warnings xxhash)
 add_executable(gguf2hpp apps/gguf2hpp/main.cpp)
 target_link_libraries(gguf2hpp PRIVATE gguf_header project_warnings)
 
+# What the configure runs to read general.architecture. A target too, so the build compiles
+# it with the warnings and ctest runs it.
+add_executable(gguf_architecture apps/gguf_architecture/main.cpp)
+target_link_libraries(gguf_architecture PRIVATE gguf_header project_warnings)
+
 # --- engine ---
 # main.cpp includes the generated model.hpp, so there is no engine without a model.
 set(MODEL_GGUF "" CACHE FILEPATH "GGUF to compile the engine for")
@@ -112,24 +117,51 @@ if(MODEL_GGUF)
   # The file `engine` loads when run without an argument.
   target_compile_definitions(engine PRIVATE MODEL_GGUF="${MODEL_GGUF}")
 
-  # The forward pass is written for one architecture, and model.hpp does not exist yet at
-  # configure time. So read general.architecture here: it is the first key of a GGUF, and
-  # file(STRINGS) returns the key and its value as two consecutive strings. A wrong guess
-  # cannot build the wrong thing: forward.hpp static_asserts the architecture.
-  file(STRINGS ${MODEL_GGUF} model_strings LIMIT_INPUT 4096 LIMIT_COUNT 8)
-  list(FIND model_strings "general.architecture" arch_key)
-  set(MODEL_ARCH "")
-  if(arch_key GREATER -1)
-    math(EXPR arch_value "${arch_key} + 1")
-    list(GET model_strings ${arch_value} MODEL_ARCH)
+  # The decoder is written per architecture, and model.hpp does not exist yet at configure
+  # time. So the project's own reader reads general.architecture here: gguf_architecture,
+  # compiled from the reader's sources at the first configure and again when they change.
+  set(arch_probe ${CMAKE_BINARY_DIR}/CMakeFiles/gguf_architecture)
+  set(arch_probe_sources ${CMAKE_SOURCE_DIR}/apps/gguf_architecture/main.cpp
+    ${CMAKE_SOURCE_DIR}/src/gguf/reader.cpp)
+  foreach(source ${arch_probe_sources} ${CMAKE_SOURCE_DIR}/src/gguf/reader.hpp)
+    # Also true when the probe does not exist yet.
+    if(${source} IS_NEWER_THAN ${arch_probe})
+      try_compile(arch_probe_built SOURCES ${arch_probe_sources}
+        CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${CMAKE_SOURCE_DIR}/src;${xxhash_SOURCE_DIR}"
+        COMPILE_DEFINITIONS -DXXH_INLINE_ALL
+        CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON NO_CACHE
+        OUTPUT_VARIABLE arch_probe_log COPY_FILE ${arch_probe})
+      if(NOT arch_probe_built)
+        message(FATAL_ERROR "Cannot build gguf_architecture:\n${arch_probe_log}")
+      endif()
+      break()
+    endif()
+  endforeach()
+  execute_process(COMMAND ${arch_probe} ${MODEL_GGUF} RESULT_VARIABLE arch_exit
+    OUTPUT_VARIABLE MODEL_ARCH ERROR_VARIABLE arch_error)
+  if(NOT arch_exit EQUAL 0)
+    message(FATAL_ERROR "MODEL_GGUF: ${arch_error}")
   endif()
   message(STATUS "MODEL_GGUF architecture: '${MODEL_ARCH}'")
 
-  if(MODEL_ARCH STREQUAL "qwen3")
-    # The reference forward pass, and the tool that checks it against llama.cpp's dumps.
-    add_library(forward_pass STATIC src/reference/forward.cu src/megakernel/megakernel.cu
-      ${GEN_DIR}/model.hpp)
+  # The architectures with a decoder: the model type, defined in src/arch/<architecture>.hpp,
+  # and the decoder's sources. Another size of one of them is another MODEL_GGUF, no edit.
+  set(MK_MODEL_qwen3 Qwen3)
+  set(MK_DECODER_qwen3 src/reference/forward.cu src/megakernel/megakernel.cu)
+  # The value comes from the file: it names a variable only when it is a plain name.
+  set(MK_MODEL "")
+  if(MODEL_ARCH MATCHES "^[a-z0-9_]+$")
+    set(MK_MODEL "${MK_MODEL_${MODEL_ARCH}}")
+  endif()
+
+  if(MK_MODEL)
+    # The reference forward pass and the megakernel, and the tool that checks the first
+    # against llama.cpp's dumps and the second against the first.
+    add_library(forward_pass STATIC ${MK_DECODER_${MODEL_ARCH}} ${GEN_DIR}/model.hpp)
     target_link_libraries(forward_pass PUBLIC weights)
+    # config/build.hpp's BuildModel.
+    target_compile_definitions(forward_pass PUBLIC MK_MODEL=${MK_MODEL}
+      MK_MODEL_HEADER="arch/${MODEL_ARCH}.hpp")
 
     # The engine decodes through the megakernel when its model has a forward pass.
     target_link_libraries(engine PRIVATE forward_pass)
@@ -162,12 +194,14 @@ target_link_libraries(smoke_test PRIVATE GTest::gtest_main project_warnings)
 gtest_discover_tests(smoke_test)
 
 # The engine's host-only code: the checksum, BF16, the comparison metrics, the position
-# count and the megakernel's schedule proofs. No GPU and no model.
+# count, the megakernel's schedule proofs and the model concept. No GPU and no model.
 add_executable(host_test tests/weights/checksum_test.cpp tests/base/numeric_test.cpp
   tests/reference/compare_test.cpp tests/decode/positions_test.cpp
-  tests/megakernel/schedule_test.cpp)
+  tests/megakernel/schedule_test.cpp tests/config/model_spec_test.cpp)
 target_include_directories(host_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(host_test PRIVATE GTest::gtest_main project_warnings)
+# config.hpp names a BuildGpu: model_spec_test derives configurations from test models.
+target_compile_definitions(host_test PRIVATE MK_GPU=${MK_GPU})
 gtest_discover_tests(host_test)
 
 # The device side, on the model the engine is built for. Needs a GPU.
@@ -229,6 +263,11 @@ endif()
 
 set(TOY_GGUF ${CMAKE_SOURCE_DIR}/tests/data/toy.gguf)
 set(QWEN_GGUF ${CMAKE_SOURCE_DIR}/models/Qwen_Qwen3-0.6B-bf16.gguf)
+
+# The probe the configure runs prints the architecture and nothing else. ctest ends the
+# output it matches with a newline.
+add_test(NAME gguf_architecture.prints_toy COMMAND gguf_architecture ${TOY_GGUF})
+set_tests_properties(gguf_architecture.prints_toy PROPERTIES PASS_REGULAR_EXPRESSION "^toy\n?$")
 
 add_executable(reader_test tests/gguf/reader_test.cpp tests/gguf/emitter_test.cpp)
 target_link_libraries(reader_test PRIVATE gguf_header GTest::gtest_main project_warnings)

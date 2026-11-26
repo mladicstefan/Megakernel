@@ -42,6 +42,11 @@ The build is for the RTX 4070 Ti SUPER and compiles CUDA for its architecture al
 `-DMK_GPU=Rtx5070` builds for the RTX 5070 instead. Another Nvidia GPU is a type in
 `src/config/gpu.hpp`, a line in `CMakeLists.txt` and a recompile.
 
+The model is a type too. CMake reads the file's `general.architecture` with the project's
+own GGUF reader and names the model type for it, `Qwen3` in `src/arch/qwen3.hpp`. That type
+reads every number from `model.hpp`, so another qwen3 model is another `-DMODEL_GGUF` and
+nothing else. A model the megakernel cannot run fails to compile with the reason.
+
 ## How it works
 
 ### 1. The model becomes a header
@@ -74,19 +79,21 @@ A wrong file or a wrong GPU stops the engine before any weight is uploaded. With
 
 ### 3. The configuration is a type
 
-One struct names every build choice. Each kernel is a template over that struct, so a
-choice is a constant inside the kernel and never a flag. Three of the members are types
-themselves, and each has a small interface that the compiler checks.
+One struct names every build choice. It is a template over the model and the GPU, and
+each kernel is a template over it, so a choice is a constant inside the kernel and never a
+flag. Four of the members are types themselves, and each has a small interface that the
+compiler checks. The block size and the context length are derived from the model.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/config-dark.svg">
-  <img src="docs/img/config.svg" alt="EngineConfig has five members; three are types checked by a concept, and the grid is derived from the GPU type's SM count and blocks per SM.">
+  <img src="docs/img/config.svg" alt="EngineConfig&lt;Model, Gpu&gt; has six members; four are types checked by a concept, n_ctx and threads are derived from the model, and the grid from the GPU type's SM count and blocks per SM.">
 </picture>
 
 To swap a component, name another type in the struct. A grid that cannot run the model
 fails a `static_assert` when the kernel is compiled. So do blocks whose shared memory does
-not fit on an SM, a KV cache that does not fit in the GPU's memory or is longer than the
-model's context, and device code compiled for another architecture than the GPU type's.
+not fit on an SM or exceeds a block's 48 KB, a KV cache that does not fit in the GPU's
+memory or is longer than the model's context, and device code compiled for another
+architecture than the GPU type's.
 
 ### 4. The megakernel runs a whole step in one launch
 
@@ -157,7 +164,8 @@ The output matrix already runs at the memory limit. The layers are 11% above it.
 
 | Item | State |
 |---|---|
-| Another model architecture | The forward pass is written for the qwen3 graph only. |
+| Another qwen3 model | A model is a type, `Qwen3`, behind the `ModelSpec` concept, and another size is another `-DMODEL_GGUF`. Checked on crafted shapes; no second real model has run. Qwen3-4B does not fit the megakernel's static shared memory. |
+| Another model architecture | The decoders are written for the qwen3 graph only. A second architecture is a second model type and a row in CMake's table, plus its own Q/K norm and RoPE. |
 | Another GPU | A GPU is one type, named with `-DMK_GPU`. `Rtx5070` compiles for sm_120. It has not been run, and its capacity comes from the specification. |
 | KV cache below 16 bits | Would be a new format type. None exists. |
 | One launch for many tokens | Still one launch per token. |

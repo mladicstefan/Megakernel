@@ -33,6 +33,10 @@
 // - with --per-op, each op on llama.cpp's operands and with its rounding. An op then differs
 //   from llama.cpp only in the order of its sums, so the limits are tight.
 namespace {
+using Model = mk::BuildModel;
+using Trace = mk::Trace<Model>;
+using Token = mk::Token<Model>;
+
 // With --megakernel the megakernel decodes instead. --check then runs the reference pass next
 // to it and compares every phase of the megakernel on the reference's operands.
 constexpr std::string_view kUsage =
@@ -129,7 +133,7 @@ std::expected<void, std::string> read_tensor(const std::filesystem::path& file,
 
 // The dump's trace of one position: the logits, and with layers every other tensor too.
 std::expected<void, std::string> read_reference(const std::filesystem::path& dir, std::size_t pos,
-                                                bool layers, mk::Trace& out) {
+                                                bool layers, Trace& out) {
     const auto                       pos_dir = dir / std::format("pos{:03}", pos);
     std::expected<void, std::string> result;
     if (layers) {
@@ -179,7 +183,7 @@ struct Table {
         }
     }
 
-    void add_layers(std::size_t pos, const mk::Trace& ours, const mk::Trace& reference) {
+    void add_layers(std::size_t pos, const Trace& ours, const Trace& reference) {
         std::vector<std::span<const float>> theirs;
         mk::for_each_tensor(reference, [&](int, std::string_view, std::span<const float> values) {
             theirs.push_back(values);
@@ -220,8 +224,8 @@ std::expected<mk::DeviceWeights, std::string> load_weights(const std::string& mo
 
 // The megakernel decodes. With --check, the reference pass decodes the same tokens first
 // and the megakernel runs each phase on the reference's operands.
-int run_megakernel(const Options& o, const std::vector<mk::Token>* prompt) {
-    using C = mk::EngineConfig;
+int run_megakernel(const Options& o, const std::vector<Token>* prompt) {
+    using C = mk::BuildConfig;
     const std::size_t steps = mk::positions(prompt->size(), o.generate);
     if (steps > C::n_ctx) {
         return fail(std::format("{} positions are more than the {} this build's KV cache holds",
@@ -266,14 +270,14 @@ int run_megakernel(const Options& o, const std::vector<mk::Token>* prompt) {
     // The tensors the megakernel writes. It fuses the others away.
     constexpr std::string_view kMaterialized[] = {"embd",    "Qcur",    "Kcur",       "Vcur",
                                                   "kqv_out", "ffn_inp", "ffn_swiglu", "l_out"};
-    const auto                 ours = std::make_unique<mk::Trace>();
-    const auto                 ref  = std::make_unique<mk::Trace>();
-    std::vector<mk::Token>     generated;
+    const auto                 ours = std::make_unique<Trace>();
+    const auto                 ref  = std::make_unique<Trace>();
+    std::vector<Token>         generated;
     Table                      table;
     std::size_t                top1_agree = 0;
     double                     max_kl = 0, seconds = 0;
 
-    mk::Token token = prompt->front();
+    Token token = prompt->front();
     for (std::size_t pos = 0; pos < steps; ++pos) {
         if (pos < prompt->size()) {
             token = (*prompt)[pos];
@@ -290,7 +294,7 @@ int run_megakernel(const Options& o, const std::vector<mk::Token>* prompt) {
         if (const auto* e = std::get_if<mk::CudaError>(&next)) {
             return fail(*e);
         }
-        token = std::get<mk::Token>(next);
+        token = std::get<Token>(next);
 
         if (const auto e = decoder.read_trace(*ours)) {
             return fail(*e);
@@ -312,7 +316,7 @@ int run_megakernel(const Options& o, const std::vector<mk::Token>* prompt) {
         table.add(pos, -1, "result_output", ours->result_output, ref_logits);
         max_kl = std::max(max_kl, mk::kl_divergence(ref_logits, ours->result_output));
         // The megakernel's own argmax, against the reference's logits.
-        const mk::Token expected = *mk::Token::checked(mk::argmax(ref_logits));
+        const Token expected = *Token::checked(mk::argmax(ref_logits));
         top1_agree += token.id == expected.id;
         token = expected; // both keep decoding the reference's chain
         if (pos + 1 >= prompt->size() && generated.size() < o.generate) {
@@ -349,7 +353,7 @@ int run_megakernel(const Options& o, const std::vector<mk::Token>* prompt) {
 
 // Decodes with the decoder that is compiled for configuration C.
 template <mk::DecoderConfig C>
-int run(const Options& o, const std::vector<mk::Token>* prompt) {
+int run(const Options& o, const std::vector<Token>* prompt) {
     // A dump has the layers of the prompt's positions only, so --per-op stops there.
     const std::size_t generate = o.per_op ? 1 : o.generate;
     const std::size_t steps    = mk::positions(prompt->size(), generate);
@@ -373,9 +377,9 @@ int run(const Options& o, const std::vector<mk::Token>* prompt) {
                           : "exact arithmetic");
 
     // 4 MB each: not on the stack.
-    const auto             ours      = std::make_unique<mk::Trace>();
-    const auto             reference = std::make_unique<mk::Trace>();
-    std::vector<mk::Token> generated;
+    const auto             ours      = std::make_unique<Trace>();
+    const auto             reference = std::make_unique<Trace>();
+    std::vector<Token>     generated;
     Table                  table;
     // Logits against the reference's, while both chains have decoded the same tokens.
     std::size_t                compared = 0, top1_agree = 0;
@@ -383,7 +387,7 @@ int run(const Options& o, const std::vector<mk::Token>* prompt) {
     std::optional<std::size_t> diverged;
     double                     decode_seconds = 0;
 
-    mk::Token token = prompt->front();
+    Token token = prompt->front();
     for (std::size_t pos = 0; pos < steps; ++pos) {
         if (pos < prompt->size()) {
             token = (*prompt)[pos];
@@ -409,7 +413,7 @@ int run(const Options& o, const std::vector<mk::Token>* prompt) {
         }
 
         const std::span<const float> logits = ours->result_output;
-        token = *mk::Token::checked(mk::argmax(logits)); // an index into the logits: in range
+        token = *Token::checked(mk::argmax(logits)); // an index into the logits: in range
         if (pos + 1 >= prompt->size() && generated.size() < generate) {
             generated.push_back(token);
         }
@@ -470,13 +474,13 @@ int main(int argc, char** argv) {
         std::println(stderr, "{}", kUsage);
         return 2;
     }
-    const auto prompt = mk::read_tokens(options->tokens);
+    const auto prompt = mk::read_tokens<Model>(options->tokens);
     if (!prompt) {
         return fail(std::format("{}: {}", options->tokens, prompt.error()));
     }
     if (options->megakernel) {
         return run_megakernel(*options, &*prompt);
     }
-    return options->per_op ? run<mk::LlamaCpuConfig>(*options, &*prompt)
-                           : run<mk::EngineConfig>(*options, &*prompt);
+    return options->per_op ? run<mk::LlamaCpuConfig<Model>>(*options, &*prompt)
+                           : run<mk::BuildConfig>(*options, &*prompt);
 }

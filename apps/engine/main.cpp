@@ -62,13 +62,13 @@ std::optional<Options> parse_args(std::span<char*> args) {
     return o;
 }
 
-using Device = mk::VerifiedDevice<mk::EngineConfig::Gpu>;
+using Device = mk::VerifiedDevice<mk::BuildGpu>;
 
 // Decodes the prompt in the token file greedily through the megakernel.
 int decode(const Device& device, mk::Weights weights, const Options& o) {
 #ifdef MK_ENGINE_DECODES
-    using C           = mk::EngineConfig;
-    const auto prompt = mk::read_tokens(o.tokens);
+    using C           = mk::BuildConfig;
+    const auto prompt = mk::read_tokens<C::Model>(o.tokens);
     if (!prompt) {
         std::println(stderr, "engine: {}: {}", o.tokens, prompt.error());
         return 1;

@@ -21,16 +21,17 @@
 // megakernel. Host only (C++23): nvcc never includes this.
 namespace mk {
 // The IDs in a file like tokens.txt, "[785, 32875, ...]": every run of digits is one ID.
-// The file is untrusted, so each ID is checked against the vocabulary.
-inline std::expected<std::vector<Token>, std::string> read_tokens(const std::string& path) {
+// The file is untrusted, so each ID is checked against model M's vocabulary.
+template <ModelSpec M>
+std::expected<std::vector<Token<M>>, std::string> read_tokens(const std::string& path) {
     std::ifstream is(path);
     if (!is) {
         return std::unexpected("cannot open");
     }
-    const std::string  text{std::istreambuf_iterator<char>(is), {}};
-    std::vector<Token> out;
-    const char*        p   = text.data();
-    const char* const  end = p + text.size();
+    const std::string     text{std::istreambuf_iterator<char>(is), {}};
+    std::vector<Token<M>> out;
+    const char*           p   = text.data();
+    const char* const     end = p + text.size();
     while (p != end) {
         if (*p < '0' || *p > '9') {
             ++p;
@@ -38,10 +39,10 @@ inline std::expected<std::vector<Token>, std::string> read_tokens(const std::str
         }
         std::uint64_t id   = 0;
         const auto    read = std::from_chars(p, end, id);
-        const auto    tok  = read.ec == std::errc{} ? Token::checked(id) : std::nullopt;
+        const auto    tok  = read.ec == std::errc{} ? Token<M>::checked(id) : std::nullopt;
         if (!tok) {
             return std::unexpected(std::format("the ID at byte {} is outside the vocabulary of {}",
-                                               p - text.data(), n_vocab));
+                                               p - text.data(), M::n_vocab));
         }
         out.push_back(*tok);
         p = read.ptr;
@@ -52,18 +53,20 @@ inline std::expected<std::vector<Token>, std::string> read_tokens(const std::str
     return out;
 }
 
+template <ModelSpec M>
 struct Generation {
-    std::vector<Token> tokens;  // the generated ones, without the prompt
-    std::size_t        steps;   // positions decoded
-    double             seconds; // in the megakernel, token read-back included
+    std::vector<Token<M>> tokens;  // the generated ones, without the prompt
+    std::size_t           steps;   // positions decoded
+    double                seconds; // in the megakernel, token read-back included
 };
 
 // Decodes prompt, then generates `generate` tokens, each the most likely one. The caller
 // has checked that the positions fit C::n_ctx.
 template <MegakernelConfig C>
-std::expected<Generation, std::string>
+std::expected<Generation<typename C::Model>, std::string>
 generate_greedy(const VerifiedDevice<typename C::Gpu>& device, Weights weights,
-                std::span<const Token> prompt, std::size_t generate) {
+                std::span<const Token<typename C::Model>> prompt, std::size_t generate) {
+    using M           = typename C::Model;
     auto made_decoder = Decoder<C>::make(weights);
     auto made_kernel  = Megakernel<C>::make(device);
     const auto error  = [](const CudaError& e) {
@@ -78,8 +81,8 @@ generate_greedy(const VerifiedDevice<typename C::Gpu>& device, Weights weights,
     auto& decoder = std::get<Decoder<C>>(made_decoder);
     auto& kernel  = std::get<Megakernel<C>>(made_kernel);
 
-    Generation g{.tokens = {}, .steps = positions(prompt.size(), generate), .seconds = 0};
-    Token      token = prompt.front();
+    Generation<M> g{.tokens = {}, .steps = positions(prompt.size(), generate), .seconds = 0};
+    Token<M>      token = prompt.front();
     for (std::size_t pos = 0; pos < g.steps; ++pos) {
         if (pos < prompt.size()) {
             token = prompt[pos];
@@ -91,7 +94,7 @@ generate_greedy(const VerifiedDevice<typename C::Gpu>& device, Weights weights,
         if (const auto* e = std::get_if<CudaError>(&next)) {
             return error(*e);
         }
-        token = std::get<Token>(next);
+        token = std::get<Token<M>>(next);
         if (pos + 1 >= prompt.size() && g.tokens.size() < generate) {
             g.tokens.push_back(token);
         }
@@ -99,7 +102,8 @@ generate_greedy(const VerifiedDevice<typename C::Gpu>& device, Weights weights,
     return g;
 }
 
-inline void print_generated(std::span<const Token> generated) {
+template <ModelSpec M>
+void print_generated(const std::vector<Token<M>>& generated) {
     std::print("generated: [");
     for (std::size_t i = 0; i < generated.size(); ++i) {
         std::print("{}{}", i ? ", " : "", generated[i].id);
@@ -107,7 +111,8 @@ inline void print_generated(std::span<const Token> generated) {
     std::println("]");
 }
 
-inline void print_speed(const Generation& g) {
+template <ModelSpec M>
+void print_speed(const Generation<M>& g) {
     const auto steps = static_cast<double>(g.steps);
     std::println("decode: {} steps in {:.3f} s, {:.3f} ms per step, {:.0f} tokens/s", g.steps,
                  g.seconds, g.seconds * 1e3 / steps, steps / g.seconds);
