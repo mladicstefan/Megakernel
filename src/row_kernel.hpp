@@ -9,10 +9,12 @@
 // this header: C++20 only.
 namespace mk {
 // K::dot<Cols>(row, xs) is the dot product of the Cols weights at row with xs, computed by
-// one whole warp. Every lane gets the result. Cols is a multiple of K::step.
+// one whole warp. Every lane gets the result. Cols is a multiple of K::step, and row starts
+// on a multiple of K::alignment bytes.
 template <class K>
 concept RowKernel = requires(const std::uint16_t* row, const float* xs) {
     { K::step } -> std::convertible_to<unsigned>;
+    { K::alignment } -> std::convertible_to<unsigned>;
     { K::template dot<256>(row, xs) } -> std::same_as<float>;
 };
 
@@ -29,14 +31,15 @@ __device__ inline float warp_sum(float v) {
 // Each lane takes 8 consecutive weights (16 bytes) at a time, so the warp reads 512
 // contiguous bytes per step.
 struct RowDot8 {
-    static constexpr unsigned step = 256; // weights the warp reads per step
+    static constexpr unsigned step      = 256; // weights the warp reads per step
+    static constexpr unsigned alignment = 16;  // bytes: a lane loads its 8 weights as one uint4
 #ifdef __CUDACC__
     template <unsigned Cols>
     __device__ static float dot(const std::uint16_t* row, const float* xs) {
         static_assert(Cols % step == 0);
         float sum = 0;
         for (unsigned c = (threadIdx.x % 32) * 8; c < Cols; c += step) {
-            // Aligned: tensors start on 32 bytes and a row is a multiple of 16 bytes.
+            // Aligned: row starts on 16 bytes, and c is a multiple of 8 weights.
             const uint4  w = *reinterpret_cast<const uint4*>(row + c);
             const float* x = xs + c;
             sum += bf16_to_float(static_cast<std::uint16_t>(w.x)) * x[0] +

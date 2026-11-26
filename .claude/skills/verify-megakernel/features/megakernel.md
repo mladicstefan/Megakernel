@@ -85,9 +85,10 @@ Preconditions:
   - `512 512 8 4 128 2 1024`: within tolerance with `--generate 32`, and the same 32
     tokens. Its attention width, 1,024, is wider than `ff`: the output projection's vector
     is the longest one the shared buffer `xs` holds.
-  - `512 1536 4 2 128 2 1024 align=8 pad8`: the engine builds and its checksums match,
-    then `--tokens` fails with `misaligned address`. The row kernel loads 16-byte words, and
-    every matrix starts 8 bytes past a multiple of 16.
+  - `512 1536 4 2 128 2 1024 align=8 pad8`: `engine` fails to build with `static
+    assertion failed with "general.alignment is not a multiple of the row kernel's
+    alignment"`. The row kernel loads 16-byte words, and every matrix starts 8 bytes past
+    a multiple of 16.
 - **Proof.** The `.stdout` files and the three sanitizer logs.
 
 ## Gotchas
