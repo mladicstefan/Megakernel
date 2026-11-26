@@ -51,6 +51,7 @@ It exits non-zero on a hard failure. Rerun `launch` after any source change.
 | `craft <kind> <name>` | Writes `<scratch>/craft/<name>.gguf` and prints its path. Kinds: `evil-strings` (also writes `<name>.gguf.check.hpp` with byte-exact `static_assert`s), `bad-key`, `digit-key`, `nonfinite`, `zero-tensors`. |
 | `engine <in.gguf>` | Configures `<scratch>/engine-build` with `MODEL_GGUF`, builds `engine`, runs it. Evidence: `engine.configure.log`, `engine.build.log`, `engine.stdout`. Prints the `Generating model.hpp` line. |
 | `run-engine <name> [args]` | Runs the engine that `engine` built, with the given arguments (a GGUF path, or none). Records `<name>.cmd`, `.stdout`, `.stderr` and `.exit`. Prints `exit=` and both streams. |
+| `gate` | For the engine that `engine` built: ptxas's registers, spills and static shared memory for the megakernel on sm_89, its SASS instruction count, and the median and range of ms per step over three `forward --megakernel --generate 128` runs. Evidence: `gate.txt`, `gate.ptxas.log`, `gate.sm_89.sass`, `gate.run{1,2,3}.stdout`. |
 
 The recipes per feature are in [features/README.md](features/README.md).
 

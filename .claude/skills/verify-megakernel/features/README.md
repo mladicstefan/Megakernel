@@ -55,3 +55,5 @@ these H2s, in order: `Sub-features`, `How to get to it (user POV)`,
   matches llama.cpp's greedy tokens, and is compared with its dump tensor by tensor.
 - [Megakernel](./megakernel.md): one kernel launch per decode step, checked phase by phase
   against the reference pass, with its tokens per second.
+- [Perf gate](./perf-gate.md): the megakernel's registers, spills, shared memory, SASS
+  count and ms per step, with the baseline and the limits a change stays inside.
