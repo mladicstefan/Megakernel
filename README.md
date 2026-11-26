@@ -38,9 +38,12 @@ build/engine --tokens tests/data/reference/planets/tokens.txt --generate 32
 
 The engine takes and prints token IDs. It has no tokenizer yet.
 
-The build is for the RTX 4070 Ti SUPER and compiles CUDA for its architecture alone.
-`-DMK_GPU=Rtx5070` builds for the RTX 5070 instead. Another Nvidia GPU is a type in
-`src/config/gpu.hpp`, a line in `CMakeLists.txt` and a recompile.
+The build is for the GPU in the machine that configures it. At every configure a probe asks
+the CUDA runtime for device 0, and CUDA compiles for that card's architecture alone. The RTX
+4070 Ti SUPER and the RTX 5070 are types in `src/config/gpu_catalogue.hpp`; any other Nvidia
+card gets a type generated from what the driver reports, with an unmeasured `blocks_per_sm`.
+`-DMK_GPU=Rtx5070` builds for a card that is not in the machine, and `-DMK_GPU=detected`
+forces the generated type.
 
 The model is a type too. CMake reads the file's `general.architecture` with the project's
 own GGUF reader and names the model type for it, `Qwen3` in `src/arch/qwen3.hpp`. That type
@@ -166,7 +169,7 @@ The output matrix already runs at the memory limit. The layers are 11% above it.
 |---|---|
 | Another qwen3 model | A model is a type, `Qwen3`, behind the `ModelSpec` concept, and another size is another `-DMODEL_GGUF`. Checked on crafted shapes; no second real model has run. Qwen3-4B does not fit the megakernel's static shared memory. |
 | Another model architecture | The decoders are written for the qwen3 graph only. A second architecture is a second model type and a row in CMake's table, plus its own Q/K norm and RoPE. |
-| Another GPU | A GPU is one type, named with `-DMK_GPU`. `Rtx5070` compiles for sm_120. It has not been run, and its capacity comes from the specification. |
+| Another GPU | A GPU is one type. The build finds the installed one, or `-DMK_GPU` names one. `Rtx5070` compiles for sm_120. It has not been run, and its capacity comes from the specification. A card with no type in the catalogue builds with a generated one whose `blocks_per_sm` is not measured. |
 | KV cache below 16 bits | Would be a new format type. None exists. |
 | One launch for many tokens | Still one launch per token. |
 | Text in, text out | No tokenizer yet. |

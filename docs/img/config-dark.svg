@@ -24,7 +24,7 @@
     <text x="24" y="108">Kv        = KvBF16</text>
     <text x="24" y="132">n_ctx     = min(4096, context_length)</text>
     <text x="24" y="156">Gpu       = BuildGpu</text>
-    <text class="dim" x="24" y="180">  (MK_GPU, default Rtx4070TiSuper)</text>
+    <text class="dim" x="24" y="180">  (MK_GPU, default: the GPU found)</text>
     <text x="24" y="204">threads   = group * head_dim</text>
     <text class="dim" x="24" y="228">  (2 * 128 = 256 for Qwen3-0.6B)</text>
     <text x="24" y="252">RowKernel = RowDot8</text>

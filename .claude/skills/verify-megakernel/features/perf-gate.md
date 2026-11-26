@@ -59,8 +59,8 @@ Preconditions:
 - The first step of a process also loads the kernel. Every run here is one process of 141
   steps, so compare only runs of the same length.
 - The static numbers do not depend on the GPU or its load; only `ms/step` does.
-- The gate measures sm_89, the architecture of the default `MK_GPU=Rtx4070TiSuper`, and a
-  build compiles that one architecture only. On a build for another `MK_GPU` it fails with
-  `FAIL no sm_89 code in <obj>`.
+- The gate measures sm_89, the architecture of the RTX 4070 Ti SUPER, which the default
+  `MK_GPU=detect` selects on the development machine, and a build compiles that one
+  architecture only. On a build for another GPU it fails with `FAIL no sm_89 code in <obj>`.
 - The engine build is a Debug build, which only changes host code: device code is
   optimised the same either way (no `-G`).
