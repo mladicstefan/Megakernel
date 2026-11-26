@@ -102,9 +102,9 @@ compile) # compile <header.hpp> <name> [check.cpp]: does the header build, as C+
     [[ -f $EVIDENCE/$name.probe.stdout ]] && echo "probe: $(cat "$EVIDENCE/$name.probe.stdout")"
     true
     ;;
-craft) # craft <kind> <name>: write a hostile or edge-case GGUF into scratch, print its path
+craft) # craft <kind> <name> [args]: write a hostile or edge-case GGUF into scratch, print its path
     mkdir -p "$SCRATCH/craft"
-    "$PY" -I "$HERE/craft_gguf.py" "$1" "$SCRATCH/craft/$2.gguf"
+    "$PY" -I "$HERE/craft_gguf.py" "$1" "$SCRATCH/craft/$2.gguf" "${@:3}"
     ;;
 engine) # engine <in.gguf>: configure the engine for a model, build it, run it
     gguf=$(realpath "$1")

@@ -1,11 +1,16 @@
 """Writes hostile or edge-case GGUF files for driving gguf2hpp.
 
-Usage: python -I craft_gguf.py <kind> <out.gguf>
-Kinds: evil-strings, bad-key, digit-key, nonfinite, zero-tensors.
+Usage: python -I craft_gguf.py <kind> <out.gguf> [args]
+Kinds: evil-strings, bad-key, digit-key, nonfinite, zero-tensors, qwen3.
 
 evil-strings also writes <out>.check.hpp: static_asserts that the generated header holds
 exactly these bytes. The expected bytes are spelled as char arrays, not as escaped literals,
 so the check does not reuse the emitter's escaping.
+
+qwen3 takes <embd> <ff> <heads> <kv_heads> <head_dim> <layers> <vocab> [align=<n>] [pad8]
+and writes a qwen3 model of that shape with random weights, for building the engine for
+it. align=<n> sets general.alignment, and pad8 puts an 8-byte tensor before the others. It
+also writes <out>.tokens.txt: 14 token IDs inside the vocabulary.
 """
 
 import math
@@ -13,7 +18,8 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from gguf import GGUFWriter
+from gguf import GGMLQuantizationType, GGUFWriter
+from gguf.quants import quantize
 
 EVIL = ['q"uote', "back\\slash", "new\nline", "end*/comment", "tri??=graph", "nul\0byte", "\\x41B"]
 
@@ -24,11 +30,66 @@ def char_array(name: str, s: str) -> str:
     return f"inline constexpr char {name}[] = {{{body}}};"
 
 
+# Adds the keys and tensors the engine reads for a qwen3 model, and returns a prompt.
+def qwen3(w: GGUFWriter, args: list[str]) -> str:
+    embd, ff, heads, kv_heads, head_dim, layers, vocab = map(int, args[:7])
+    options = args[7:]
+    rng = np.random.default_rng(0)
+    for o in options:
+        if o.startswith("align="):
+            w.add_custom_alignment(int(o.removeprefix("align=")))
+        elif o != "pad8":
+            sys.exit(f"unknown qwen3 option {o}")
+    w.add_uint32("qwen3.block_count", layers)
+    w.add_uint32("qwen3.context_length", 40960)
+    w.add_uint32("qwen3.embedding_length", embd)
+    w.add_uint32("qwen3.feed_forward_length", ff)
+    w.add_uint32("qwen3.attention.head_count", heads)
+    w.add_uint32("qwen3.attention.head_count_kv", kv_heads)
+    w.add_uint32("qwen3.attention.key_length", head_dim)
+    w.add_uint32("qwen3.attention.value_length", head_dim)
+    w.add_float32("qwen3.rope.freq_base", 1e6)
+    w.add_float32("qwen3.attention.layer_norm_rms_epsilon", 1e-6)
+
+    def matrix(name: str, cols: int, rows: int, scale: float) -> None:
+        a = rng.standard_normal((rows, cols), dtype=np.float32) * scale
+        w.add_tensor(
+            name, quantize(a, GGMLQuantizationType.BF16), raw_dtype=GGMLQuantizationType.BF16
+        )
+
+    def norm(name: str, n: int) -> None:
+        w.add_tensor(name, (1 + 0.1 * rng.standard_normal(n)).astype(np.float32))
+
+    if "pad8" in options:
+        w.add_tensor("pad8", np.zeros(1, dtype=np.float64))
+    q, kv = heads * head_dim, kv_heads * head_dim
+    matrix("token_embd.weight", embd, vocab, 1.0)
+    for layer in range(layers):
+        p = f"blk.{layer}."
+        norm(p + "attn_norm.weight", embd)
+        matrix(p + "attn_q.weight", embd, q, embd**-0.5)
+        matrix(p + "attn_k.weight", embd, kv, embd**-0.5)
+        matrix(p + "attn_v.weight", embd, kv, embd**-0.5)
+        norm(p + "attn_q_norm.weight", head_dim)
+        norm(p + "attn_k_norm.weight", head_dim)
+        matrix(p + "attn_output.weight", q, embd, q**-0.5)
+        norm(p + "ffn_norm.weight", embd)
+        matrix(p + "ffn_gate.weight", embd, ff, embd**-0.5)
+        matrix(p + "ffn_up.weight", embd, ff, embd**-0.5)
+        matrix(p + "ffn_down.weight", ff, embd, ff**-0.5)
+    norm("output_norm.weight", embd)
+    matrix("output.weight", embd, vocab, embd**-0.5)
+    return str(rng.integers(0, vocab, 14).tolist()) + "\n"
+
+
 def main() -> None:
     kind, out = sys.argv[1], Path(sys.argv[2])
-    w = GGUFWriter(out, "evil")
+    w = GGUFWriter(out, "qwen3" if kind == "qwen3" else "evil")
     check = []
-    if kind == "evil-strings":
+    tokens = ""
+    if kind == "qwen3":
+        tokens = qwen3(w, sys.argv[3:])
+    elif kind == "evil-strings":
         for i, s in enumerate(EVIL):
             w.add_tensor(s, np.zeros(1, dtype=np.float32))
             check.append(char_array(f"want{i}", s))
@@ -52,6 +113,8 @@ def main() -> None:
     w.close()
     if check:
         Path(f"{out}.check.hpp").write_text("#include <string_view>\n" + "\n".join(check) + "\n")
+    if tokens:
+        Path(f"{out}.tokens.txt").write_text(tokens)
     print(out)
 
 
