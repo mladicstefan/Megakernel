@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-14 -14 788 228" width="788" height="228" role="img" aria-label="Tokens per second: megakernel 436 and llama.cpp 381 at 141 positions; 416 and 369 at 1,037 positions; goal 450; estimated ceiling 520.">
+  <title>Tokens per second: megakernel 436 and llama.cpp 381 at 141 positions; 416 and 369 at 1,037 positions; goal 450; estimated ceiling 520.</title>
+  <style>
+    svg { color: #e5e9ef; }
+    text { font-family: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace; font-size: 12px; fill: #e5e9ef; }
+    .small { font-size: 10.5px; }
+    .dim { fill: #99a4b3; }
+    .box { fill: #11151b; stroke: #e5e9ef; stroke-width: 1.2; }
+    .ctbox { fill: #12332f; stroke: #35cdb9; stroke-width: 1.4; }
+    .rtbox { fill: #3a2415; stroke: #f79456; stroke-width: 1.4; }
+    .wire { stroke: #e5e9ef; stroke-width: 1.3; fill: none; }
+    .dash { stroke: #99a4b3; stroke-width: 1.2; fill: none; stroke-dasharray: 4 4; }
+    .ctfill { fill: #35cdb9; } .rtfill { fill: #f79456; } .mutefill { fill: #313a48; }
+    .cttext { fill: #35cdb9; } .rttext { fill: #f79456; }
+    .bar { stroke: #e5e9ef; stroke-width: 3; }
+    .onct { fill: #1a2029; }
+    .card { fill: #1a2029; stroke: #313a48; stroke-width: 1; }
+  </style>
+  <rect class="card" x="-13.5" y="-13.5" width="787" height="227" rx="8"/>
+    <text class="small dim" x="10" y="16">tokens per second</text>
+    <text x="10" y="50">141 positions</text>
+    <rect class="ctfill" x="150" y="34" width="469.5" height="16"/><text class="small onct" x="612" y="46" text-anchor="end">436 megakernel</text>
+    <rect class="mutefill" x="150" y="54" width="410.3" height="16"/><text class="small" x="567" y="67">381 llama.cpp CUDA</text>
+    <text x="10" y="112">1,037 positions</text>
+    <rect class="ctfill" x="150" y="96" width="448" height="16"/><text class="small onct" x="590" y="108" text-anchor="end">416 megakernel</text>
+    <rect class="mutefill" x="150" y="116" width="397.4" height="16"/><text class="small" x="554" y="129">369 llama.cpp CUDA</text>
+    <line class="dash" x1="634.6" y1="26" x2="634.6" y2="150"/><text class="small dim" x="634.6" y="166" text-anchor="middle">goal 450</text>
+    <line class="dash" x1="710" y1="26" x2="710" y2="150"/><text class="small dim" x="710" y="166" text-anchor="middle">ceiling 520</text><text class="small dim" x="710" y="180" text-anchor="middle">(estimated)</text>
+    <line class="wire" x1="150" y1="26" x2="150" y2="150"/><text class="small dim" x="150" y="166" text-anchor="middle">0</text>
+  </svg>

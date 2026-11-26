@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-14 -14 788 198" width="788" height="198" role="img" aria-label="The reference pass is checked against llama.cpp and the megakernel against the reference pass; the engine uses the megakernel.">
+  <title>The reference pass is checked against llama.cpp and the megakernel against the reference pass; the engine uses the megakernel.</title>
+  <style>
+    svg { color: #1a222e; }
+    text { font-family: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace; font-size: 12px; fill: #1a222e; }
+    .small { font-size: 10.5px; }
+    .dim { fill: #5a6574; }
+    .box { fill: #f6f7f9; stroke: #1a222e; stroke-width: 1.2; }
+    .ctbox { fill: #dff3ef; stroke: #0b7267; stroke-width: 1.4; }
+    .rtbox { fill: #fbe6d9; stroke: #b8480f; stroke-width: 1.4; }
+    .wire { stroke: #1a222e; stroke-width: 1.3; fill: none; }
+    .dash { stroke: #5a6574; stroke-width: 1.2; fill: none; stroke-dasharray: 4 4; }
+    .ctfill { fill: #0b7267; } .rtfill { fill: #b8480f; } .mutefill { fill: #d3d9e1; }
+    .cttext { fill: #0b7267; } .rttext { fill: #b8480f; }
+    .bar { stroke: #1a222e; stroke-width: 3; }
+    .card { fill: #ffffff; stroke: #d3d9e1; stroke-width: 1; }
+  </style>
+  <rect class="card" x="-13.5" y="-13.5" width="787" height="197" rx="8"/>
+    <defs><marker id="m6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#1a222e"/></marker></defs>
+    <rect class="box" x="10" y="20" width="140" height="56" rx="6"/><text x="80" y="44" text-anchor="middle">llama.cpp</text><text class="small dim" x="80" y="62" text-anchor="middle">dump of every tensor</text>
+    <line class="wire" x1="298" y1="48" x2="152" y2="48" marker-end="url(#m6)"/><text class="small" x="225" y="40" text-anchor="middle">checked per op</text>
+    <rect class="box" x="300" y="20" width="140" height="56" rx="6"/><text x="370" y="44" text-anchor="middle">reference pass</text><text class="small dim" x="370" y="62" text-anchor="middle">1 kernel per op</text>
+    <line class="wire" x1="588" y1="48" x2="442" y2="48" marker-end="url(#m6)"/><text class="small" x="515" y="40" text-anchor="middle">checked per phase</text>
+    <rect class="box" x="590" y="20" width="160" height="56" rx="6"/><text x="670" y="44" text-anchor="middle">megakernel</text><text class="small dim" x="670" y="62" text-anchor="middle">used by engine --tokens</text>
+    <text class="small dim" x="225" y="100" text-anchor="middle">worst difference 1e-4</text><text class="small dim" x="225" y="116" text-anchor="middle">(attention), 3e-6 elsewhere</text>
+    <text class="small dim" x="515" y="100" text-anchor="middle">worst difference 6e-6,</text><text class="small dim" x="515" y="116" text-anchor="middle">attention 1.3e-3</text>
+    <line class="dash" x1="10" y1="140" x2="750" y2="140"/><text class="small" x="380" y="158" text-anchor="middle">all three generate the same 32 tokens</text>
+  </svg>

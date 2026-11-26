@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-14 -14 788 198" width="788" height="198" role="img" aria-label="A 2.30 ms step: 0.14 ms launch and barriers, 0.51 ms output matrix, 1.57 ms layers, 0.08 ms attention; at the memory read rate the same work would take 1.92 ms.">
+  <title>A 2.30 ms step: 0.14 ms launch and barriers, 0.51 ms output matrix, 1.57 ms layers, 0.08 ms attention; at the memory read rate the same work would take 1.92 ms.</title>
+  <style>
+    svg { color: #1a222e; }
+    text { font-family: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace; font-size: 12px; fill: #1a222e; }
+    .small { font-size: 10.5px; }
+    .dim { fill: #5a6574; }
+    .box { fill: #f6f7f9; stroke: #1a222e; stroke-width: 1.2; }
+    .ctbox { fill: #dff3ef; stroke: #0b7267; stroke-width: 1.4; }
+    .rtbox { fill: #fbe6d9; stroke: #b8480f; stroke-width: 1.4; }
+    .wire { stroke: #1a222e; stroke-width: 1.3; fill: none; }
+    .dash { stroke: #5a6574; stroke-width: 1.2; fill: none; stroke-dasharray: 4 4; }
+    .ctfill { fill: #0b7267; } .rtfill { fill: #b8480f; } .mutefill { fill: #d3d9e1; }
+    .cttext { fill: #0b7267; } .rttext { fill: #b8480f; }
+    .bar { stroke: #1a222e; stroke-width: 3; }
+    .card { fill: #ffffff; stroke: #d3d9e1; stroke-width: 1; }
+  </style>
+  <rect class="card" x="-13.5" y="-13.5" width="787" height="197" rx="8"/>
+    <text class="small dim" x="10" y="16">one decode step over 141 positions, in milliseconds</text>
+    <text x="10" y="54">measured</text>
+    <rect class="rtfill" x="130" y="36" width="36.5" height="26"/><rect class="ctfill" x="166.5" y="36" width="133" height="26" opacity="0.55"/><rect class="ctfill" x="299.5" y="36" width="409.6" height="26"/><rect class="rtfill" x="709.1" y="36" width="20.9" height="26" opacity="0.6"/>
+    <text class="small" x="148" y="80" text-anchor="middle">0.14</text><text class="small" x="233" y="80" text-anchor="middle">0.51</text><text class="small" x="504" y="80" text-anchor="middle">1.57</text><text class="small" x="722" y="80" text-anchor="middle">0.08</text>
+    <text x="10" y="120">at read rate</text>
+    <rect class="ctfill" x="130" y="102" width="130.4" height="26" opacity="0.55"/><rect class="ctfill" x="260.4" y="102" width="367.8" height="26"/><rect class="rtfill" x="628.2" y="102" width="2.6" height="26" opacity="0.6"/>
+    <text class="small" x="195" y="146" text-anchor="middle">0.50</text><text class="small" x="444" y="146" text-anchor="middle">1.41</text>
+    <text class="small dim" x="130" y="164">launch + 170 barriers | output matrix | 28 layers | attention</text>
+  </svg>

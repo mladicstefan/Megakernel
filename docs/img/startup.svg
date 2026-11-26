@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-14 -14 788 258" width="788" height="258" role="img" aria-label="Start-up checks the file, then the GPU, then uploads; a failed check exits before anything reaches the GPU.">
+  <title>Start-up checks the file, then the GPU, then uploads; a failed check exits before anything reaches the GPU.</title>
+  <style>
+    svg { color: #1a222e; }
+    text { font-family: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace; font-size: 12px; fill: #1a222e; }
+    .small { font-size: 10.5px; }
+    .dim { fill: #5a6574; }
+    .box { fill: #f6f7f9; stroke: #1a222e; stroke-width: 1.2; }
+    .ctbox { fill: #dff3ef; stroke: #0b7267; stroke-width: 1.4; }
+    .rtbox { fill: #fbe6d9; stroke: #b8480f; stroke-width: 1.4; }
+    .wire { stroke: #1a222e; stroke-width: 1.3; fill: none; }
+    .dash { stroke: #5a6574; stroke-width: 1.2; fill: none; stroke-dasharray: 4 4; }
+    .ctfill { fill: #0b7267; } .rtfill { fill: #b8480f; } .mutefill { fill: #d3d9e1; }
+    .cttext { fill: #0b7267; } .rttext { fill: #b8480f; }
+    .bar { stroke: #1a222e; stroke-width: 3; }
+    .card { fill: #ffffff; stroke: #d3d9e1; stroke-width: 1; }
+  </style>
+  <rect class="card" x="-13.5" y="-13.5" width="787" height="257" rx="8"/>
+    <defs><marker id="m2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#1a222e"/></marker></defs>
+    <rect class="box" x="10" y="24" width="150" height="56" rx="6"/><text x="85" y="48" text-anchor="middle">VerifiedFile</text><text class="small dim" x="85" y="66" text-anchor="middle">size, header hash</text>
+    <line class="wire" x1="160" y1="52" x2="208" y2="52" marker-end="url(#m2)"/>
+    <rect class="box" x="210" y="24" width="150" height="56" rx="6"/><text x="285" y="48" text-anchor="middle">GPU check</text><text class="small dim" x="285" y="66" text-anchor="middle">66 SMs expected</text>
+    <line class="wire" x1="360" y1="52" x2="408" y2="52" marker-end="url(#m2)"/>
+    <rect class="box" x="410" y="24" width="150" height="56" rx="6"/><text x="485" y="48" text-anchor="middle">upload</text><text class="small dim" x="485" y="66" text-anchor="middle">1.5 GB in 0.17 s</text>
+    <path class="wire" d="M560 42 H600 V30 H618" marker-end="url(#m2)"/><path class="wire" d="M560 62 H600 V98 H618" marker-end="url(#m2)"/>
+    <rect class="box" x="620" y="8" width="130" height="44" rx="6"/><text x="685" y="27" text-anchor="middle">checksum proof</text><text class="small dim" x="685" y="43" text-anchor="middle">311 of 311</text>
+    <rect class="box" x="620" y="76" width="130" height="44" rx="6"/><text x="685" y="95" text-anchor="middle">decode</text><text class="small dim" x="685" y="111" text-anchor="middle">--tokens</text>
+    <line class="dash" x1="85" y1="80" x2="85" y2="158" marker-end="url(#m2)"/><text class="small" x="85" y="176" text-anchor="middle">exit 1</text><text class="small dim" x="85" y="194" text-anchor="middle">wrong size or hash,</text><text class="small dim" x="85" y="208" text-anchor="middle">or not a GGUF</text>
+    <line class="dash" x1="285" y1="80" x2="285" y2="158" marker-end="url(#m2)"/><text class="small" x="285" y="176" text-anchor="middle">exit 1</text><text class="small dim" x="285" y="194" text-anchor="middle">another SM count</text>
+    <text class="small dim" x="485" y="176" text-anchor="middle">tensor i sits at</text><text class="small cttext" x="485" y="192" text-anchor="middle">base + offset_i</text>
+  </svg>

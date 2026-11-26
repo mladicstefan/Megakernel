@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-14 -14 788 218" width="788" height="218" role="img" aria-label="The GGUF header is turned into model.hpp, which the compilers combine with config.hpp into one engine binary.">
+  <title>The GGUF header is turned into model.hpp, which the compilers combine with config.hpp into one engine binary.</title>
+  <style>
+    svg { color: #e5e9ef; }
+    text { font-family: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace; font-size: 12px; fill: #e5e9ef; }
+    .small { font-size: 10.5px; }
+    .dim { fill: #99a4b3; }
+    .box { fill: #11151b; stroke: #e5e9ef; stroke-width: 1.2; }
+    .ctbox { fill: #12332f; stroke: #35cdb9; stroke-width: 1.4; }
+    .rtbox { fill: #3a2415; stroke: #f79456; stroke-width: 1.4; }
+    .wire { stroke: #e5e9ef; stroke-width: 1.3; fill: none; }
+    .dash { stroke: #99a4b3; stroke-width: 1.2; fill: none; stroke-dasharray: 4 4; }
+    .ctfill { fill: #35cdb9; } .rtfill { fill: #f79456; } .mutefill { fill: #313a48; }
+    .cttext { fill: #35cdb9; } .rttext { fill: #f79456; }
+    .bar { stroke: #e5e9ef; stroke-width: 3; }
+    .card { fill: #1a2029; stroke: #313a48; stroke-width: 1; }
+  </style>
+  <rect class="card" x="-13.5" y="-13.5" width="787" height="217" rx="8"/>
+    <defs><marker id="m1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#e5e9ef"/></marker></defs>
+    <rect class="box" x="10" y="30" width="130" height="56" rx="6"/><text x="75" y="54" text-anchor="middle">model.gguf</text><text class="small dim" x="75" y="72" text-anchor="middle">header only</text>
+    <line class="wire" x1="140" y1="58" x2="238" y2="58" marker-end="url(#m1)"/><text class="small" x="189" y="50" text-anchor="middle">gguf2hpp</text>
+    <rect class="ctbox" x="240" y="30" width="150" height="56" rx="6"/><text x="315" y="54" text-anchor="middle">model.hpp</text><text class="small dim" x="315" y="72" text-anchor="middle">constexpr tables</text>
+    <line class="wire" x1="390" y1="58" x2="488" y2="58" marker-end="url(#m1)"/><text class="small" x="439" y="50" text-anchor="middle">g++ / nvcc</text>
+    <rect class="box" x="490" y="30" width="130" height="56" rx="6"/><text x="555" y="54" text-anchor="middle">engine</text><text class="small dim" x="555" y="72" text-anchor="middle">one model, one GPU</text>
+    <line class="wire" x1="620" y1="58" x2="738" y2="58" marker-end="url(#m1)"/><text class="small rttext" x="680" y="50" text-anchor="middle">token IDs</text>
+    <rect class="ctbox" x="240" y="124" width="150" height="50" rx="6"/><text x="315" y="146" text-anchor="middle">config.hpp</text><text class="small dim" x="315" y="162" text-anchor="middle">the build's choices</text>
+    <path class="wire" d="M390 149 H439 V66" marker-end="url(#m1)"/><text class="small" x="447" y="118">types</text>
+  </svg>

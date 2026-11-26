@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-14 -14 788 238" width="788" height="238" role="img" aria-label="Rows of a BF16 matrix are divided among warps; a warp reads one row as 32 lanes of 16 bytes.">
+  <title>Rows of a BF16 matrix are divided among warps; a warp reads one row as 32 lanes of 16 bytes.</title>
+  <style>
+    svg { color: #1a222e; }
+    text { font-family: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace; font-size: 12px; fill: #1a222e; }
+    .small { font-size: 10.5px; }
+    .dim { fill: #5a6574; }
+    .box { fill: #f6f7f9; stroke: #1a222e; stroke-width: 1.2; }
+    .ctbox { fill: #dff3ef; stroke: #0b7267; stroke-width: 1.4; }
+    .rtbox { fill: #fbe6d9; stroke: #b8480f; stroke-width: 1.4; }
+    .wire { stroke: #1a222e; stroke-width: 1.3; fill: none; }
+    .dash { stroke: #5a6574; stroke-width: 1.2; fill: none; stroke-dasharray: 4 4; }
+    .ctfill { fill: #0b7267; } .rtfill { fill: #b8480f; } .mutefill { fill: #d3d9e1; }
+    .cttext { fill: #0b7267; } .rttext { fill: #b8480f; }
+    .bar { stroke: #1a222e; stroke-width: 3; }
+    .card { fill: #ffffff; stroke: #d3d9e1; stroke-width: 1; }
+  </style>
+  <rect class="card" x="-13.5" y="-13.5" width="787" height="237" rx="8"/>
+    <defs><marker id="m5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#1a222e"/></marker></defs>
+    <text class="small dim" x="10" y="16">matrix: rows x cols of BF16</text>
+    <rect class="ctfill" x="10" y="26" width="200" height="34" opacity="0.85"/><rect class="mutefill" x="10" y="60" width="200" height="34"/><rect class="ctfill" x="10" y="94" width="200" height="34" opacity="0.85"/><rect class="mutefill" x="10" y="150" width="200" height="34"/>
+    <rect class="wire" x="10" y="26" width="200" height="158"/>
+    <text x="110" y="143" text-anchor="middle">...</text>
+    <text x="222" y="47">warp 0</text><text x="222" y="81">warp 1</text><text x="222" y="115">warp 2</text><text x="222" y="171">warp 1055</text>
+    <path class="dash" d="M210 60 L360 60"/><path class="dash" d="M210 94 L360 110"/>
+    <text class="small dim" x="360" y="48">one row, read by warp 1</text>
+    <rect class="box" x="360" y="60" width="62" height="50"/><rect class="box" x="422" y="60" width="62" height="50"/><rect class="box" x="484" y="60" width="62" height="50"/><rect class="box" x="676" y="60" width="62" height="50"/>
+    <text x="391" y="82" text-anchor="middle">lane 0</text><text class="small dim" x="391" y="98" text-anchor="middle">16 B</text>
+    <text x="453" y="82" text-anchor="middle">lane 1</text><text class="small dim" x="453" y="98" text-anchor="middle">16 B</text>
+    <text x="515" y="82" text-anchor="middle">lane 2</text><text class="small dim" x="515" y="98" text-anchor="middle">16 B</text>
+    <text x="611" y="89" text-anchor="middle">...</text>
+    <text x="707" y="82" text-anchor="middle">lane 31</text><text class="small dim" x="707" y="98" text-anchor="middle">16 B</text>
+    <line class="wire" x1="360" y1="128" x2="738" y2="128"/><text class="small" x="549" y="146" text-anchor="middle">512 contiguous bytes per step</text>
+    <text class="small dim" x="360" y="176">each lane: 8 weights x 8 inputs, then the lanes add up</text>
+  </svg>
