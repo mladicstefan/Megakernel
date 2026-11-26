@@ -124,7 +124,7 @@ Preconditions:
     a multiple of 16.
 - **Capacity.** In a scratch copy (`git archive HEAD | tar -x -C $S/cap`), make one edit,
   then configure it for Qwen and build `engine`:
-  - `blocks_per_sm = 5` in `Rtx4070TiSuper` (`src/config/gpu.hpp`): `static assertion
+  - `blocks_per_sm = 5` in `Rtx4070TiSuper` (`src/config/gpu_catalogue.hpp`): `static assertion
     failed with "blocks_per_sm blocks of the megakernel's static shared memory do not fit
     in the shared memory of one SM: lower the GPU type's blocks_per_sm"`. Five blocks of
     23,408 bytes plus 1,024 reserved each are 122,160, above 102,400.

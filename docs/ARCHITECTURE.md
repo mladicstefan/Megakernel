@@ -68,9 +68,14 @@ over a tensor's offset or over the layer index.
 What adding things then costs:
 
 - **A second size of the same architecture:** another `MODEL_GGUF`. No code.
-- **The RTX 5070:** a type in `gpu.hpp`, one line in CMake's table and
-  `-DMK_GPU=Rtx5070`. The build compiles for that GPU's CUDA architecture only, and a
-  `static_assert` on `__CUDA_ARCH__` rejects a mismatch.
+- **Another Nvidia GPU in this machine:** nothing. The configure-time probe reads its SM
+  count, architecture and capacity from the CUDA runtime and generates its type. Its
+  `blocks_per_sm` is a default until someone measures it. The build compiles for its CUDA
+  architecture only, and a `static_assert` on `__CUDA_ARCH__` rejects a mismatch.
+- **A GPU that is not in this machine, such as the RTX 5070:** a type in
+  `gpu_catalogue.hpp` and its line in `MK_GPU_CATALOGUE`, then `-DMK_GPU=Rtx5070`. Once the
+  card is installed, the default build selects that type and checks its numbers against the
+  driver's.
 - **A Llama-style decoder:** one architecture header and one overload per policy.
 - **Another weight dtype:** one format type and one row kernel.
 
@@ -88,7 +93,7 @@ runs of `forward --megakernel --generate 128`.
 | 0 | **Done.** The gate as a script in the verify skill, with today's numbers: `verify.sh gate`. | every later "same speed" claim |
 | 1 | **Done.** Fix the bugs that give wrong output: the attention merge loads every member's partial, the shared buffer is sized by the widest vector, the row kernel's alignment is asserted, and `--generate` is range-checked. The repros are the verify skill's "Other shapes" recipe and three tests. | correctness on other shapes |
 | 2 | **Done.** The proofs live in `src/megakernel/schedule.hpp`, and `megakernel.cu` asserts each fact with its own message. `tests/megakernel/schedule_test.cpp` feeds every proof failing numbers. | P5 |
-| 3 | **Done.** The GPU type carries its CUDA architecture, its capacity and the megakernel's measured `blocks_per_sm`. `MK_GPU` picks it, the build compiles one architecture, a `static_assert` on `__CUDA_ARCH__` rejects another, and `schedule.hpp` proves shared memory, device memory and the context length. `Rtx5070` is a compile-only target. | the hardware axis |
+| 3 | **Done.** The GPU type carries its CUDA architecture, its capacity and the megakernel's measured `blocks_per_sm`. `MK_GPU` picks it (by default the GPU in this machine, found at configure time), the build compiles one architecture, a `static_assert` on `__CUDA_ARCH__` rejects another, and `schedule.hpp` proves shared memory, device memory and the context length. `Rtx5070` is a compile-only target. | the hardware axis |
 | 4 | **Done.** `VerifiedDevice<G>` replaces the two copies of the SM check. `Megakernel<C>::make` takes a `VerifiedDevice<C::Gpu>`, which only `VerifiedDevice<G>::check()` makes, so a caller that skips the check does not compile. The upload and the reference pass do not take one: neither depends on the SM count. | P6 |
 | 5 | Typed tensor handles replace the offset tables and the dtype casts. | P2 |
 | 6 | **Done.** The model is a type, `Qwen3` in `src/arch/qwen3.hpp`, behind `ModelSpec`, and `EngineConfig<Model, Gpu>` is the configuration, named for the build as `BuildConfig`. The globals in `forward.hpp` go, `threads` and `n_ctx` are derived from the model, and a model that needs more than a block's 48 KB of static shared memory, such as Qwen3-4B, fails on its own assertion. CMake reads `general.architecture` with the project's reader, through `gguf_architecture`, and a table maps it to the model type. | a second size of the same architecture |

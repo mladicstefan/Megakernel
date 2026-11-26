@@ -27,11 +27,20 @@ exactly the steps they affect.
   other name, or none, prints `No forward pass for this architecture: only the engine is
   built`. A file the reader rejects stops the configure with one `MODEL_GGUF: <path>: <what>
   at byte <n>`, as does a `general.architecture` that is not a string or holds a NUL byte.
-- `build-gpu`: configuring prints `MK_GPU: Rtx4070TiSuper, CUDA architectures: 89`, and
-  every `.cu` file compiles for that architecture alone. `-DMK_GPU=Rtx5070` prints `120`.
-  An unknown `MK_GPU` stops the configure with `MK_GPU=<name> is not a GPU this build
-  knows`. A `CMAKE_CUDA_ARCHITECTURES` other than the GPU type's fails to compile with
-  `nvcc compiles device code for another CUDA architecture than MK_GPU's cuda_arch`.
+- `build-gpu`: the default is `MK_GPU=detect`. `gpu_probe` (`apps/gpu_probe/main.cu`,
+  compiled once by `try_compile`, about 2 s, and run at every configure, about 0.25 s) asks
+  the CUDA runtime for device 0 and writes `build/generated/build_gpu.hpp`. Configuring on
+  the development machine prints `GPU: NVIDIA GeForce RTX 4070 Ti SUPER, 66 SMs, sm_89,
+  15988 MiB, the catalogue's type` and `MK_GPU: detect, selects Rtx4070TiSuper, CUDA
+  architectures: 89`, and every `.cu` file compiles for that architecture alone. The header
+  then holds `static_assert`s of the catalogue type's numbers against the driver's.
+  `-DMK_GPU=detected` selects `DetectedGpu`, a type the header defines from the driver's
+  numbers (`blocks_per_sm` unmeasured), and builds the same megakernel instructions.
+  `-DMK_GPU=Rtx5070` asks no device and prints `120`. An unknown `MK_GPU`, or `detect`
+  with no usable device (`CUDA_VISIBLE_DEVICES=`), stops the configure with one message
+  that names `-DMK_GPU=<type>` and lists the catalogue. `CMAKE_CUDA_ARCHITECTURES` is
+  ignored; a `-arch` in `CMAKE_CUDA_FLAGS` fails to compile with `nvcc compiles device code
+  for another CUDA architecture than MK_GPU's cuda_arch`.
 
 ## How to get to it (user POV)
 
@@ -81,8 +90,11 @@ Preconditions:
   `grep MK_GPU build/verify-evidence/<id>/engine.configure.log` and
   `grep -o -- '--generate-code=[^ "]*' $S/engine-build/compile_commands.json | sort | uniq -c`.
   Expect the 89 line and one `compute_89,code=[compute_89,sm_89]` entry per `.cu` file.
-  Configure a second directory by hand with `-DCMAKE_CUDA_ARCHITECTURES=120`, or with
-  `-DMK_GPU=Rtx9999`, and expect the messages above.
+  Configure a second directory by hand with `-DMK_GPU=Rtx5070` (expect 120 and
+  `compute_120`), with `-DMK_GPU=Rtx9999`, and with `CUDA_VISIBLE_DEVICES=` in a fresh
+  directory, and expect the messages above. In a scratch copy, set `Rtx4070TiSuper::sms` in
+  `src/config/gpu_catalogue.hpp` to 64: the configure passes and the build stops with
+  `gpu_catalogue.hpp's Rtx4070TiSuper::sms is not the 66 this machine's GPU reports`.
 - **Proof.** `engine.build.log`, `engine.stdout`, and the build lines from each touch step.
 
 ## Gotchas

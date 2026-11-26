@@ -25,8 +25,9 @@ Components live in directories under `src/`, executables under `apps/`, and test
 - `src/config/`: `config.hpp` (the configuration types every kernel is a template over,
   `EngineConfig<Model, Gpu>`), `build.hpp` (`BuildModel` and `BuildConfig`, what this build
   names; only a build with a decoder has them), `model_spec.hpp` (`ModelSpec`, what a
-  decoder needs from a model), `gpu.hpp` (GPUs as types: who each is, what it holds, the
-  megakernel's measured blocks per SM), `kv_format.hpp` (KV cache formats as types),
+  decoder needs from a model), `gpu_catalogue.hpp` (GPUs as types: who each is, what it holds, the
+  megakernel's measured blocks per SM; the rule that matches a driver's name to one),
+  `gpu.hpp` (`BuildGpu`, the one this build is for), `kv_format.hpp` (KV cache formats as types),
   `row_kernel.hpp` (row kernels as types).
 - `src/arch/`: one model type per architecture, every member read from `model.hpp`:
   `qwen3.hpp` (`Qwen3`).
@@ -42,19 +43,21 @@ Components live in directories under `src/`, executables under `apps/`, and test
   `apps/forward/main.cpp`: the `forward` CLI, which decodes token IDs with the megakernel
   or the reference pass, checks the first against the second, and the second against a
   llama.cpp dump. `apps/gguf_architecture/main.cpp`: prints a GGUF's
-  `general.architecture`; CMake runs it at configure time.
+  `general.architecture`; CMake runs it at configure time. `apps/gpu_probe/main.cu`: asks the
+  CUDA runtime for the GPU and writes `build_gpu.hpp`; CMake runs it at configure time.
 - `tools/reference/`: the llama.cpp harness that makes the dumps (its own CMake project).
 - `tests/`: `gguf/reader_test.cpp` and `gguf/emitter_test.cpp` (one gtest binary,
   `reader_test`); `weights/checksum_test.cpp`, `base/numeric_test.cpp`,
   `reference/compare_test.cpp`, `decode/positions_test.cpp`,
-  `megakernel/schedule_test.cpp` and `config/model_spec_test.cpp` (one binary,
+  `megakernel/schedule_test.cpp`, `config/model_spec_test.cpp` and
+  `config/gpu_catalogue_test.cpp` (one binary,
   `host_test`);
   `weights/weights_test.cpp` (needs `MODEL_GGUF` and a GPU); `smoke_test.cpp`.
 - `tests/data/`: `toy.gguf` (384 bytes, the main fixture), `make_test_gguf.py`, and a uv
   venv with gguf-py (`tests/data/.venv/bin/python -I`).
 - `models/`: real models, gitignored, may be missing. Tests that need one skip.
 - `build/generated/`: headers gguf2hpp writes (`toy.hpp`, `qwen.hpp` if the model exists,
-  `model.hpp` for the engine).
+  `model.hpp` for the engine), and `build_gpu.hpp`, which `gpu_probe` writes.
 - `.claude/skills/verify-megakernel/`: the project's verification skill.
 
 ## Build and test
@@ -70,10 +73,17 @@ cmake -S . -B build && cmake --build build -j && ctest --test-dir build
   table in `CMakeLists.txt`. An architecture in the table gets its model type
   (`-DMK_MODEL`), the decoders and `forward`; any other builds the engine that uploads and
   checksums. Another model of a listed architecture is another `MODEL_GGUF` and no edit.
-- **GPU:** `-DMK_GPU=<type>` names the GPU, a type in `src/config/gpu.hpp` (default
-  `Rtx4070TiSuper`; `Rtx5070` compiles but has never run). CMake's table next to it gives
-  the CUDA architecture, and the build compiles that one only. Another Nvidia GPU is a type
-  in `gpu.hpp`, a line in that table and a recompile.
+- **GPU:** the default, `-DMK_GPU=detect`, builds for the GPU in this machine. At every
+  configure `gpu_probe` asks the CUDA runtime for device 0 (under `CUDA_VISIBLE_DEVICES`) and
+  writes `build/generated/build_gpu.hpp`. A card that has a type in
+  `src/config/gpu_catalogue.hpp` gets it (its numbers are `static_assert`ed against the
+  driver's); any other Nvidia card gets a generated `DetectedGpu` with an unmeasured
+  `blocks_per_sm`. `-DMK_GPU=detected` forces the generated type. `-DMK_GPU=<type>` names a
+  catalogue type for a GPU that is not here (`Rtx5070` compiles but has never run). The build
+  compiles CUDA for the selected GPU's architecture alone, and ignores
+  `CMAKE_CUDA_ARCHITECTURES`. No device is a configure error that names `-DMK_GPU=<type>`.
+  Another GPU in the catalogue is a type in `gpu_catalogue.hpp` and a line in its
+  `MK_GPU_CATALOGUE`.
 - **Sanitizers:** use a separate build directory with `-DENABLE_SANITIZERS=ON` (ASan and
   UBSan, host code only; use `compute-sanitizer` for kernels).
 - **Offline configure of a new build directory:** reuse the fetched sources with

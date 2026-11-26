@@ -1,20 +1,50 @@
 cmake_minimum_required(VERSION 3.28)
 
-# The GPU the build is for, named once: a type in src/config/gpu.hpp, and here its CUDA
-# architecture. CUDA compiles for that one, and gpu.hpp static_asserts that the two agree.
-set(MK_GPU Rtx4070TiSuper CACHE STRING "The GPU to compile for: a type in src/config/gpu.hpp")
-set(MK_GPU_ARCH_Rtx4070TiSuper 89)
-set(MK_GPU_ARCH_Rtx5070 120)
-if(NOT DEFINED MK_GPU_ARCH_${MK_GPU})
-  message(FATAL_ERROR "MK_GPU=${MK_GPU} is not a GPU this build knows: add its type to "
-    "src/config/gpu.hpp and its architecture here")
-endif()
-if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-  set(CMAKE_CUDA_ARCHITECTURES ${MK_GPU_ARCH_${MK_GPU}})
-endif()
-message(STATUS "MK_GPU: ${MK_GPU}, CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+# The GPU the build is for. MK_GPU is `detect` (the GPU in this machine: its catalogue type
+# in src/config/gpu_catalogue.hpp if it has one, else a type the probe generates), `detected`
+# (the generated type even for a catalogued card) or the name of a catalogue type, for a GPU
+# that is not here. The probe is below, once CUDA is enabled.
+set(MK_GPU detect CACHE STRING "The GPU to compile for: a type in src/config/gpu_catalogue.hpp, detect or detected")
 
 project(comptime_megakernel LANGUAGES CXX CUDA)
+
+# The GPU probe: apps/gpu_probe asks the CUDA runtime for device 0 (the one the engine uses,
+# under CUDA_VISIBLE_DEVICES) and writes build_gpu.hpp, the header gpu.hpp includes. Compiled
+# once with CUDA's try_compile, like gguf_architecture below, and run at every configure, so
+# another card is picked up by a reconfigure. CUDA is enabled first because the probe needs
+# the toolkit; its architecture is set after, which only has to be before the targets.
+set(GEN_DIR ${CMAKE_BINARY_DIR}/generated)
+file(MAKE_DIRECTORY ${GEN_DIR})
+set(gpu_probe ${CMAKE_BINARY_DIR}/CMakeFiles/gpu_probe)
+set(gpu_probe_sources ${CMAKE_SOURCE_DIR}/apps/gpu_probe/main.cu)
+foreach(source ${gpu_probe_sources} ${CMAKE_SOURCE_DIR}/src/config/gpu_catalogue.hpp)
+  # Also true when the probe does not exist yet.
+  if(${source} IS_NEWER_THAN ${gpu_probe})
+    try_compile(gpu_probe_built SOURCES ${gpu_probe_sources}
+      CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${CMAKE_SOURCE_DIR}/src"
+      CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON NO_CACHE
+      OUTPUT_VARIABLE gpu_probe_log COPY_FILE ${gpu_probe})
+    if(NOT gpu_probe_built)
+      message(FATAL_ERROR "Cannot build gpu_probe:\n${gpu_probe_log}")
+    endif()
+    break()
+  endif()
+endforeach()
+execute_process(COMMAND ${gpu_probe} ${MK_GPU} ${GEN_DIR}/build_gpu.hpp
+  RESULT_VARIABLE gpu_exit OUTPUT_VARIABLE gpu_line ERROR_VARIABLE gpu_error)
+if(NOT gpu_exit EQUAL 0)
+  string(STRIP "${gpu_error}" gpu_error)
+  message(FATAL_ERROR "${gpu_error}")
+endif()
+if(NOT gpu_line MATCHES "^([A-Za-z0-9_]+) ([0-9]+) (.*)\n$")
+  message(FATAL_ERROR "gpu_probe printed '${gpu_line}'")
+endif()
+# The type MK_GPU selects, and its CUDA architecture, the one CUDA compiles for. This
+# replaces CMake's own default and any -DCMAKE_CUDA_ARCHITECTURES; gpu.hpp static_asserts it.
+set(MK_GPU_TYPE ${CMAKE_MATCH_1})
+set(CMAKE_CUDA_ARCHITECTURES ${CMAKE_MATCH_2})
+message(STATUS "GPU: ${CMAKE_MATCH_3}")
+message(STATUS "MK_GPU: ${MK_GPU}, selects ${MK_GPU_TYPE}, CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -55,7 +85,6 @@ if(ENABLE_SANITIZERS)
   add_link_options(-fsanitize=address,undefined)
 endif()
 
-set(GEN_DIR ${CMAKE_BINARY_DIR}/generated)
 # A generated header has no compile command, so clangd guesses one and cannot find
 # model_types.hpp. This tells it where to look when such a header is opened in an editor.
 file(WRITE ${GEN_DIR}/.clangd
@@ -93,6 +122,12 @@ target_link_libraries(gguf2hpp PRIVATE gguf_header project_warnings)
 add_executable(gguf_architecture apps/gguf_architecture/main.cpp)
 target_link_libraries(gguf_architecture PRIVATE gguf_header project_warnings)
 
+# The probe the configure runs, built as a target too: ctest checks its messages. Its
+# header goes to a file of its own, not the build's.
+add_executable(gpu_probe apps/gpu_probe/main.cu)
+target_include_directories(gpu_probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
+set(gpu_probe_header ${CMAKE_BINARY_DIR}/gpu_probe_test.hpp)
+
 # --- engine ---
 # main.cpp includes the generated model.hpp, so there is no engine without a model.
 set(MODEL_GGUF "" CACHE FILEPATH "GGUF to compile the engine for")
@@ -109,7 +144,7 @@ if(MODEL_GGUF)
   # src: the generated header includes model/model_types.hpp from there.
   target_include_directories(weights PUBLIC ${GEN_DIR} ${CMAKE_SOURCE_DIR}/src)
   # gpu.hpp's BuildGpu: everything that includes it links weights.
-  target_compile_definitions(weights PUBLIC MK_GPU=${MK_GPU})
+  target_compile_definitions(weights PUBLIC MK_GPU=${MK_GPU_TYPE})
 
   add_executable(engine apps/engine/main.cpp ${GEN_DIR}/model.hpp)
   # gguf_header: the engine checks its file with the reader's own parse() and hash.
@@ -197,11 +232,13 @@ gtest_discover_tests(smoke_test)
 # count, the megakernel's schedule proofs and the model concept. No GPU and no model.
 add_executable(host_test tests/weights/checksum_test.cpp tests/base/numeric_test.cpp
   tests/reference/compare_test.cpp tests/decode/positions_test.cpp
-  tests/megakernel/schedule_test.cpp tests/config/model_spec_test.cpp)
+  tests/megakernel/schedule_test.cpp tests/config/model_spec_test.cpp
+  tests/config/gpu_catalogue_test.cpp)
 target_include_directories(host_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(host_test PRIVATE GTest::gtest_main project_warnings)
 # config.hpp names a BuildGpu: model_spec_test derives configurations from test models.
-target_compile_definitions(host_test PRIVATE MK_GPU=${MK_GPU})
+target_include_directories(host_test PRIVATE ${GEN_DIR})
+target_compile_definitions(host_test PRIVATE MK_GPU=${MK_GPU_TYPE})
 gtest_discover_tests(host_test)
 
 # The device side, on the model the engine is built for. Needs a GPU.
@@ -268,6 +305,19 @@ set(QWEN_GGUF ${CMAKE_SOURCE_DIR}/models/Qwen_Qwen3-0.6B-bf16.gguf)
 # output it matches with a newline.
 add_test(NAME gguf_architecture.prints_toy COMMAND gguf_architecture ${TOY_GGUF})
 set_tests_properties(gguf_architecture.prints_toy PROPERTIES PASS_REGULAR_EXPRESSION "^toy\n?$")
+
+# A GPU named with MK_GPU is not asked about; a name it does not know, or no device, is one
+# message that names -DMK_GPU=<type> and lists the catalogue.
+add_test(NAME gpu_probe.names_a_gpu_that_is_not_here COMMAND gpu_probe Rtx5070 ${gpu_probe_header})
+set_tests_properties(gpu_probe.names_a_gpu_that_is_not_here PROPERTIES
+  PASS_REGULAR_EXPRESSION "^Rtx5070 120 RTX 5070, named by MK_GPU\n?$")
+add_test(NAME gpu_probe.refuses_an_unknown_gpu COMMAND gpu_probe Rtx9999 ${gpu_probe_header})
+set_tests_properties(gpu_probe.refuses_an_unknown_gpu PROPERTIES PASS_REGULAR_EXPRESSION
+  "MK_GPU=Rtx9999 is not a GPU this build knows.*one of: Rtx4070TiSuper, Rtx5070")
+add_test(NAME gpu_probe.no_device_is_one_message COMMAND gpu_probe detect ${gpu_probe_header})
+set_tests_properties(gpu_probe.no_device_is_one_message PROPERTIES
+  ENVIRONMENT "CUDA_VISIBLE_DEVICES=" PASS_REGULAR_EXPRESSION
+  "no usable CUDA device.*-DMK_GPU=<type>, one of: Rtx4070TiSuper, Rtx5070")
 
 add_executable(reader_test tests/gguf/reader_test.cpp tests/gguf/emitter_test.cpp)
 target_link_libraries(reader_test PRIVATE gguf_header GTest::gtest_main project_warnings)

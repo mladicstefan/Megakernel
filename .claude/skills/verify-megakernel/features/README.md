@@ -46,8 +46,8 @@ these H2s, in order: `Sub-features`, `How to get to it (user POV)`,
 - [Untrusted input](./untrusted-input.md): hostile strings are escaped byte-exactly;
   invalid keys and non-finite values are rejected.
 - [Build integration](./build-integration.md): `MODEL_GGUF` generates `model.hpp`, the
-  engine builds, edits rerun the right steps, and `MK_GPU` picks the one CUDA
-  architecture.
+  engine builds, edits rerun the right steps, and `MK_GPU` (by default the GPU found at
+  configure time) picks the one CUDA architecture.
 - [Reference dumps](./reference-dumps.md): llama.cpp's per-layer tensors and logits for a
   committed prompt, reproducible checksums, and greedy agreement with `llama-simple`.
 - [Weights upload](./weights-upload.md): the engine verifies its GGUF, uploads the tensor
