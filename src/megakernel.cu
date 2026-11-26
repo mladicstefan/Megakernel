@@ -3,6 +3,7 @@
 #include "cuda_try.hpp"
 #include "numeric.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -24,6 +25,7 @@ constexpr unsigned kGroup     = n_head / n_head_kv;   // query heads per KV head
 constexpr unsigned kKvHeads   = n_head_kv;
 constexpr unsigned kLaneDims  = kHeadDim / 32; // head dimensions one lane of a warp holds
 constexpr unsigned kVocab     = n_vocab;
+constexpr unsigned kWidest    = std::max({kEmbd, kQ, kFf}); // the longest vector xs holds
 static_assert(kHeadDim % 32 == 0);
 
 // Attention splits the grid by KV head: block b works for KV head b % kKvHeads, as its
@@ -575,7 +577,7 @@ megakernel(Weights weights, Trace* out, const Trace* in, typename C::Kv::Bits* k
     constexpr unsigned kWarpsPerBlock = Grid<C>::warps_per_block;
     // static: without it every thread rebuilds the table on its stack.
     static constexpr Offsets offsets = kOffsets;
-    __shared__ float         xs[kFf];
+    __shared__ float         xs[kWidest];
     __shared__ float         scratch[kWarpsPerBlock];
     const std::byte* const   base    = weights.base;
     unsigned                 arrived = epoch; // what sync->arrived reaches at the next barrier

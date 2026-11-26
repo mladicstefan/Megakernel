@@ -87,9 +87,9 @@ Preconditions:
   - `512 1536 8 2 64 2 1024`: within tolerance with `--generate 700` (`kqv_out` rel L2
     1.6e-6), and the same 700 tokens. From position 512 on, `attention_merge` loads more
     partials than a block has threads: 4 query heads of up to 66 members.
-  - `512 512 8 4 128 2 1024`: `--generate 32` fails with `an illegal memory access was
-    encountered`. The shared buffer `xs` holds `ff` floats, and the output projection
-    loads `heads * head_dim`.
+  - `512 512 8 4 128 2 1024`: within tolerance with `--generate 32`, and the same 32
+    tokens. Its attention width, 1,024, is wider than `ff`: the output projection's vector
+    is the longest one the shared buffer `xs` holds.
   - `512 1536 4 2 128 2 1024 align=8 pad8`: the engine builds and its checksums match,
     then `--tokens` fails with `misaligned address`. The row kernel loads 16-byte words, and
     every matrix starts 8 bytes past a multiple of 16.
