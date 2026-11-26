@@ -47,9 +47,14 @@ Preconditions:
 
 - **Engine.** Run `RUN_ID=<id> $V run-engine decode --tokens $P/tokens.txt`. Expect
   `exit=0`, a `generated:` line equal to `$P/greedy.txt`, and a `decode:` line. Run it with
-  `--tokens /nonexistent.txt`, with a file holding `[1, 999999]`, and with `--generate
-  5000`: each exits 1 with `cannot open`, `the ID at byte 4 is outside the vocabulary of
-  151936`, or `5013 positions are more than the 4096 this build's KV cache holds`.
+  `--tokens /nonexistent.txt`, with a file holding `[1, 999999]`, with `--generate 5000`
+  and with `--generate 18446744073709551613`: each exits 1 with `cannot open`, `the ID at
+  byte 4 is outside the vocabulary of 151936`, `5013 positions are more than the 4096 this
+  build's KV cache holds`, or `18446744073709551615 positions are more than the 4096 this
+  build's KV cache holds` (the count saturates rather than wrapping). `--generate
+  99999999999999999999999` (past SIZE_MAX) and `--generate ''` print the usage line and
+  exit 2. ctest runs the first two as `engine.refuses_a_count_that_wraps` and
+  `engine.refuses_a_count_past_size_max`.
 - **Greedy.** Run `$F --megakernel $P/tokens.txt > $EV/mega.stdout; echo exit=$?`. Expect
   `exit=0`, and `diff <(sed -n 's/^generated: //p' $EV/mega.stdout) $P/greedy.txt` to
   print nothing.

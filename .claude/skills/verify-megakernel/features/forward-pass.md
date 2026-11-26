@@ -84,6 +84,11 @@ Preconditions:
     and `exit=1`.
   - `$F --generate 5000 $P/tokens.txt` gives `5013 positions are more than the 4096 this
     build's KV cache holds` and `exit=1`.
+  - `$F --generate 18446744073709551613 $P/tokens.txt`, with and without `--megakernel`,
+    gives `18446744073709551615 positions are more than the 4096 this build's KV cache
+    holds` and `exit=1`: the count saturates rather than wrapping.
+  - `$F --generate 99999999999999999999999 $P/tokens.txt` (past SIZE_MAX) and `$F
+    --generate '' $P/tokens.txt` give the usage line and `exit=2`.
 - **Memcheck.** Run `compute-sanitizer --tool memcheck $F --generate 3 $P/tokens.txt >
   $EV/memcheck.log 2>&1`. Expect `generated: [25, 362, 8]` and `ERROR SUMMARY: 0 errors`.
   It takes about 15 s.

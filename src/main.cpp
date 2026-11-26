@@ -46,9 +46,10 @@ std::optional<Options> parse_args(std::span<char*> args) {
             const std::string_view v = args[++i];
             if (a == "--tokens") {
                 o.tokens = v.data();
-            } else if (std::from_chars(v.data(), v.data() + v.size(), o.generate).ptr !=
-                       v.data() + v.size()) {
-                return std::nullopt;
+            } else if (const auto [end, ec] = std::from_chars(v.data(), v.data() + v.size(),
+                                                              o.generate);
+                       ec != std::errc{} || end != v.data() + v.size()) {
+                return std::nullopt; // ec is set for no digits and for a value past SIZE_MAX
             }
         } else if (!a.starts_with("--") && !model_given) {
             o.model     = a.data();
