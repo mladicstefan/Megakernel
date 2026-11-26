@@ -572,6 +572,9 @@ megakernel(Weights weights, Trace* out, const Trace* in, typename C::Kv::Bits* k
            MegaSync<C>* sync, unsigned token, unsigned pos, unsigned epoch) {
     static_assert(grid_fits_model<C>, "this grid cannot run this model");
     static_assert(rows_are_scheduled_once<C>, "a matrix row has no warp, or more than one");
+    // A matrix starts on general.alignment, and its rows are whole steps apart.
+    static_assert(model::alignment % C::RowKernel::alignment == 0,
+                  "general.alignment is not a multiple of the row kernel's alignment");
     constexpr unsigned kBlocks        = Grid<C>::blocks;
     constexpr unsigned kThreads       = Grid<C>::threads;
     constexpr unsigned kWarpsPerBlock = Grid<C>::warps_per_block;
