@@ -14,22 +14,32 @@ Status and next steps: `ROADMAP.md` (milestones) and `docs/PLAN.md` (engine phas
 
 ## Layout
 
-- `tools/gguf_header/`: `reader.{hpp,cpp}` (Cursor, MappedFile, `parse()`),
-  `emitter.{hpp,cpp}` (`emit()`), `main.cpp` (the `gguf2hpp` CLI).
-- `src/`: the engine (`main.cpp`), `model_types.hpp` (the types generated headers use),
-  `weights.{hpp,cu}` (the weights on the GPU), `megakernel.{hpp,cu}` (one kernel launch
-  per decode step, qwen3 only), `forward.{hpp,cu}` (the reference forward pass it is checked
-  against), `config.hpp` (the configuration types every kernel is a template over), and
-  small headers: `gpu.hpp` (GPUs as types), `kv_format.hpp` (KV cache formats as types),
-  `row_kernel.hpp` (row kernels as types), `greedy.hpp` (token IDs in, token IDs out),
-  `checksum.hpp`, `numeric.hpp`, `compare.hpp`, `verified_file.hpp`.
-- `tools/forward/`: the `forward` CLI, which decodes token IDs with the megakernel or the
-  reference pass, checks the first against the second, and the second against a llama.cpp
-  dump. `tools/reference/`: the llama.cpp harness that makes
-  the dumps (its own CMake project).
-- `tests/`: `reader_test.cpp` and `emitter_test.cpp` (one gtest binary, `reader_test`),
-  `checksum_test.cpp`, `numeric_test.cpp` and `compare_test.cpp` (one binary, `host_test`),
-  `weights_test.cpp` (needs `MODEL_GGUF` and a GPU), `smoke_test.cpp`.
+Components live in directories under `src/`, executables under `apps/`, and tests mirror
+`src/`. `src/` is the one include root: write every project include relative to it
+(`#include "weights/weights.hpp"`). One top-level `CMakeLists.txt` builds everything.
+
+- `src/base/`: `host_device.hpp`, `numeric.hpp` (BF16), `cuda_try.hpp` (`MK_TRY`).
+- `src/gguf/`: `reader.{hpp,cpp}` (Cursor, MappedFile, `parse()`), `emitter.{hpp,cpp}`
+  (`emit()`).
+- `src/model/`: `model_types.hpp` (the types generated headers use).
+- `src/config/`: `config.hpp` (the configuration types every kernel is a template over),
+  `gpu.hpp` (GPUs as types), `kv_format.hpp` (KV cache formats as types), `row_kernel.hpp`
+  (row kernels as types).
+- `src/weights/`: `weights.{hpp,cu}` (the weights on the GPU), `verified_file.hpp`,
+  `checksum.hpp`.
+- `src/megakernel/`: `megakernel.{hpp,cu}` (one kernel launch per decode step, qwen3 only).
+- `src/reference/`: `forward.{hpp,cu}` (the reference forward pass the megakernel is
+  checked against), `compare.hpp`.
+- `src/decode/`: `greedy.hpp` (token IDs in, token IDs out), `positions.hpp`.
+- `apps/engine/main.cpp`: the engine. `apps/gguf2hpp/main.cpp`: the `gguf2hpp` CLI.
+  `apps/forward/main.cpp`: the `forward` CLI, which decodes token IDs with the megakernel
+  or the reference pass, checks the first against the second, and the second against a
+  llama.cpp dump.
+- `tools/reference/`: the llama.cpp harness that makes the dumps (its own CMake project).
+- `tests/`: `gguf/reader_test.cpp` and `gguf/emitter_test.cpp` (one gtest binary,
+  `reader_test`); `weights/checksum_test.cpp`, `base/numeric_test.cpp`,
+  `reference/compare_test.cpp` and `decode/positions_test.cpp` (one binary, `host_test`);
+  `weights/weights_test.cpp` (needs `MODEL_GGUF` and a GPU); `smoke_test.cpp`.
 - `tests/data/`: `toy.gguf` (384 bytes, the main fixture), `make_test_gguf.py`, and a uv
   venv with gguf-py (`tests/data/.venv/bin/python -I`).
 - `models/`: real models, gitignored, may be missing. Tests that need one skip.
@@ -64,8 +74,9 @@ cmake -S . -B build && cmake --build build -j && ctest --test-dir build
 - Warnings are strict (`-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion
   -Wold-style-cast` and more). Keep the build warning-free.
 - Compile time only. A choice that the model or the build fixes is a type or a constant,
-  never a run-time value or a flag. Add it to a configuration type in `src/config.hpp`,
-  give its interface a concept, and prove what can be proven with a `static_assert`.
+  never a run-time value or a flag. Add it to a configuration type in
+  `src/config/config.hpp`, give its interface a concept, and prove what can be proven with a
+  `static_assert`.
 - Structs with public fields and member functions. No virtual, no inheritance for
   polymorphism, no exceptions (use `std::expected`), no `std::function` or `shared_ptr`.
   Templates and concepts where they earn it.

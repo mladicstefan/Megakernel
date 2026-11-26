@@ -67,7 +67,7 @@ Preconditions:
   `diff <(grep -v '^decode:' $EV/compare.stdout) <(grep -v '^decode:' $EV/compare.2.stdout)`
   to print nothing.
 - **The comparison catches a bug.** Copy the repo's tracked files to `$S/mut` with
-  `git archive HEAD | tar -x -C $S/mut`, change `kNormEps` in `$S/mut/src/forward.cu` to
+  `git archive HEAD | tar -x -C $S/mut`, change `kNormEps` in `$S/mut/src/reference/forward.cu` to
   `1e-5f`, and build `forward` from that copy. Expect `--per-op` to exit 1 with
   `attn_norm` near 9e-3. Expect the comparison without `--per-op` to exit 0: this bug is
   smaller than llama.cpp's own rounding. Never edit the checkout itself for this.
@@ -120,4 +120,4 @@ Preconditions:
 - The ctest entries are added only when the dump exists at configure time. After creating
   the dump, rerun `cmake`.
 - A model whose matrices are not BF16, or whose norm weights are not F32, fails a
-  `static_assert` in `src/forward.hpp`.
+  `static_assert` in `src/reference/forward.hpp`.

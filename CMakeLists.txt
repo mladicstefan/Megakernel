@@ -65,14 +65,17 @@ add_library(xxhash INTERFACE)
 target_include_directories(xxhash SYSTEM INTERFACE ${xxhash_SOURCE_DIR})
 target_compile_definitions(xxhash INTERFACE XXH_INLINE_ALL)
 
+# One CMakeLists.txt: CMake tracks a target's file-level dependency on the generated
+# model.hpp only within the directory that generates it.
+# src/ is the one include root: every project include is written relative to it.
 add_library(gguf_header
-  tools/gguf_header/reader.cpp
-  tools/gguf_header/emitter.cpp
+  src/gguf/reader.cpp
+  src/gguf/emitter.cpp
 )
-target_include_directories(gguf_header PUBLIC tools/gguf_header)
+target_include_directories(gguf_header PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(gguf_header PRIVATE project_warnings xxhash)
 
-add_executable(gguf2hpp tools/gguf_header/main.cpp)
+add_executable(gguf2hpp apps/gguf2hpp/main.cpp)
 target_link_libraries(gguf2hpp PRIVATE gguf_header project_warnings)
 
 # --- engine ---
@@ -87,11 +90,11 @@ if(MODEL_GGUF)
     COMMENT "Generating model.hpp from ${MODEL_GGUF}"
   )
   # The device side: upload and kernels. nvcc compiles it as C++20.
-  add_library(weights STATIC src/weights.cu ${GEN_DIR}/model.hpp)
-  # src: the generated header includes model_types.hpp from there.
+  add_library(weights STATIC src/weights/weights.cu ${GEN_DIR}/model.hpp)
+  # src: the generated header includes model/model_types.hpp from there.
   target_include_directories(weights PUBLIC ${GEN_DIR} ${CMAKE_SOURCE_DIR}/src)
 
-  add_executable(engine src/main.cpp ${GEN_DIR}/model.hpp)
+  add_executable(engine apps/engine/main.cpp ${GEN_DIR}/model.hpp)
   # gguf_header: the engine checks its file with the reader's own parse() and hash.
   target_link_libraries(engine PRIVATE weights gguf_header project_warnings)
   # The file `engine` loads when run without an argument.
@@ -112,14 +115,15 @@ if(MODEL_GGUF)
 
   if(MODEL_ARCH STREQUAL "qwen3")
     # The reference forward pass, and the tool that checks it against llama.cpp's dumps.
-    add_library(forward_pass STATIC src/forward.cu src/megakernel.cu ${GEN_DIR}/model.hpp)
+    add_library(forward_pass STATIC src/reference/forward.cu src/megakernel/megakernel.cu
+      ${GEN_DIR}/model.hpp)
     target_link_libraries(forward_pass PUBLIC weights)
 
     # The engine decodes through the megakernel when its model has a forward pass.
     target_link_libraries(engine PRIVATE forward_pass)
     target_compile_definitions(engine PRIVATE MK_ENGINE_DECODES)
 
-    add_executable(forward tools/forward/main.cpp)
+    add_executable(forward apps/forward/main.cpp)
     target_link_libraries(forward PRIVATE forward_pass gguf_header project_warnings)
     target_compile_definitions(forward PRIVATE MODEL_GGUF="${MODEL_GGUF}")
   else()
@@ -147,15 +151,15 @@ gtest_discover_tests(smoke_test)
 
 # The engine's host-only code: the checksum, BF16, the comparison metrics and the position
 # count. No GPU and no model.
-add_executable(host_test tests/checksum_test.cpp tests/numeric_test.cpp tests/compare_test.cpp
-  tests/positions_test.cpp)
+add_executable(host_test tests/weights/checksum_test.cpp tests/base/numeric_test.cpp
+  tests/reference/compare_test.cpp tests/decode/positions_test.cpp)
 target_include_directories(host_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(host_test PRIVATE GTest::gtest_main project_warnings)
 gtest_discover_tests(host_test)
 
 # The device side, on the model the engine is built for. Needs a GPU.
 if(MODEL_GGUF)
-  add_executable(weights_test tests/weights_test.cpp)
+  add_executable(weights_test tests/weights/weights_test.cpp)
   target_link_libraries(weights_test PRIVATE weights gguf_header GTest::gtest_main project_warnings)
   target_compile_definitions(weights_test PRIVATE MODEL_GGUF="${MODEL_GGUF}")
   gtest_discover_tests(weights_test)
@@ -213,7 +217,7 @@ endif()
 set(TOY_GGUF ${CMAKE_SOURCE_DIR}/tests/data/toy.gguf)
 set(QWEN_GGUF ${CMAKE_SOURCE_DIR}/models/Qwen_Qwen3-0.6B-bf16.gguf)
 
-add_executable(reader_test tests/reader_test.cpp tests/emitter_test.cpp)
+add_executable(reader_test tests/gguf/reader_test.cpp tests/gguf/emitter_test.cpp)
 target_link_libraries(reader_test PRIVATE gguf_header GTest::gtest_main project_warnings)
 target_compile_definitions(reader_test PRIVATE
   TOY_GGUF="${TOY_GGUF}"
@@ -228,7 +232,7 @@ add_custom_command(
   DEPENDS gguf2hpp ${TOY_GGUF}
 )
 target_sources(reader_test PRIVATE ${GEN_DIR}/toy.hpp)
-# src: the generated header includes model_types.hpp from there.
+# src: the generated header includes model/model_types.hpp from there.
 target_include_directories(reader_test PRIVATE ${GEN_DIR} ${CMAKE_SOURCE_DIR}/src)
 
 # The real model is not in the repo. When it is there at configure time, emitter_test also

@@ -107,5 +107,5 @@ Preconditions:
   runs.
 - Under memcheck the kernel time is about 25 times longer. Never report it as a measurement.
 - A model with a tensor that is not a whole number of 8-byte words, or with
-  `general.alignment` below 8, fails a `static_assert` in `src/weights.hpp`. That is the
-  accepted limit of the checksum, not a build bug.
+  `general.alignment` below 8, fails a `static_assert` in `src/weights/weights.hpp`. That is
+  the accepted limit of the checksum, not a build bug.

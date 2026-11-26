@@ -49,5 +49,5 @@ Preconditions:
 - The launch build is Debug. Don't report gguf2hpp timings from it as performance. On Qwen,
   one `gen` call takes about 50 ms of wall time, script included.
 - `compile` checks that the header builds and that one consteval lookup works. It doesn't
-  check the values. The value checks live in `tests/emitter_test.cpp`; this map proves the
-  binary and the compilers agree.
+  check the values. The value checks live in `tests/gguf/emitter_test.cpp`; this map proves
+  the binary and the compilers agree.

@@ -22,11 +22,11 @@ branch.
 
 | What | Where | Proof |
 |---|---|---|
-| `gguf2hpp`: GGUF to a constexpr `model.hpp` (milestones 1 to 8) | `tools/gguf_header/`, `src/model_types.hpp` | header compiles on g++ (C++23) and nvcc (C++20); hostile files rejected |
+| `gguf2hpp`: GGUF to a constexpr `model.hpp` (milestones 1 to 8) | `src/gguf/`, `src/model/model_types.hpp` | header compiles on g++ (C++23) and nvcc (C++20); hostile files rejected |
 | llama.cpp reference dumps (Phase A) | `tools/reference/` | byte-identical reruns; greedy tokens equal `llama-simple` |
-| Weights on the GPU (Phase B) | `src/weights.{hpp,cu}`, `src/verified_file.hpp` | 311 of 311 device checksums match the file; a wrong file is rejected |
-| Reference forward pass (Phase C) | `src/forward.{hpp,cu}`, `tools/forward/` | 32 greedy tokens equal llama.cpp's; every op within 1e-4 of its dump |
-| KV cache format as a type, BF16 for the engine | `src/kv_format.hpp`, `EngineConfig` | F16, BF16 and F32 all generate llama.cpp's 32 tokens |
+| Weights on the GPU (Phase B) | `src/weights/weights.{hpp,cu}`, `src/weights/verified_file.hpp` | 311 of 311 device checksums match the file; a wrong file is rejected |
+| Reference forward pass (Phase C) | `src/reference/forward.{hpp,cu}`, `apps/forward/` | 32 greedy tokens equal llama.cpp's; every op within 1e-4 of its dump |
+| KV cache format as a type, BF16 for the engine | `src/config/kv_format.hpp`, `EngineConfig` | F16, BF16 and F32 all generate llama.cpp's 32 tokens |
 
 Measured on the RTX 4070 Ti SUPER (details in `docs/PLAN.md`):
 
@@ -54,9 +54,9 @@ together.
 One persistent CUDA kernel runs a whole decode step, with its schedule computed at compile
 time.
 
-**State on 2026-11-25:** a first megakernel exists (`src/megakernel.{hpp,cu}`). One launch
-runs a step as 170 phases with grid-wide barriers between them, on a grid of 132 blocks (2
-per SM). Every phase matches the
+**State on 2026-11-25:** a first megakernel exists (`src/megakernel/megakernel.{hpp,cu}`).
+One launch runs a step as 170 phases with grid-wide barriers between them, on a grid of 132
+blocks (2 per SM). Every phase matches the
 reference pass (within 6e-6, and 1.3e-3 for attention through the BF16 cache), and the
 three sanitizers are clean. Measured with `forward --megakernel` on the `planets` prompt:
 
