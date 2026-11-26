@@ -84,8 +84,8 @@ runs of `forward --megakernel --generate 128`.
 
 | # | Step | Opens |
 |---|---|---|
-| 0 | The gate as a script in the verify skill, with today's numbers. | every later "same speed" claim |
-| 1 | Fix the bugs that give wrong output: the attention merge strides over its items, the shared buffer is sized by the widest vector, `--generate` is range-checked. Each with the adversary's repro as its test. | correctness on other shapes |
+| 0 | **Done.** The gate as a script in the verify skill, with today's numbers: `verify.sh gate`. | every later "same speed" claim |
+| 1 | **Done.** Fix the bugs that give wrong output: the attention merge loads every member's partial, the shared buffer is sized by the widest vector, the row kernel's alignment is asserted, and `--generate` is range-checked. The repros are the verify skill's "Other shapes" recipe and three tests. | correctness on other shapes |
 | 2 | The proofs move to `schedule.hpp`, one assertion per fact, with a host test that feeds them failing numbers. | P5 |
 | 3 | The GPU type carries its CUDA architecture and its capacity. `MK_GPU` picks it, the build compiles one architecture, and capacity is asserted. `Rtx5070` as a compile-only target. | the hardware axis |
 | 4 | `VerifiedDevice<G>` replaces the two copies of the SM check. | P6 |
