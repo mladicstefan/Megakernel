@@ -32,10 +32,12 @@ struct MegaSync {
 // and result_output. The other fields of the trace are fused away and stay untouched.
 template <MegakernelConfig C>
 struct Megakernel {
-    std::unique_ptr<MegaSync<C>, CudaFree> sync;
-    std::unique_ptr<void, CudaFree>        partials; // each block's part of an attention softmax
-    std::uint32_t                          epoch = 0; // what `arrived` was before the next launch
-    std::unique_ptr<Trace, CudaFree>       operands;  // for decode_from; null until it is used
+    using Model = typename C::Model;
+
+    std::unique_ptr<MegaSync<C>, CudaFree>  sync;
+    std::unique_ptr<void, CudaFree>         partials; // each block's part of an attention softmax
+    std::uint32_t                           epoch = 0; // what `arrived` was before the next launch
+    std::unique_ptr<Trace<Model>, CudaFree> operands;  // for decode_from; null until it is used
 
     // Only on a device verified to be C::Gpu. Fails if the device cannot hold the whole grid
     // at once, or if the kernel's shared memory is not what the capacity proof counted.
@@ -43,13 +45,14 @@ struct Megakernel {
 
     // Runs token at position d.n_past, which must be below C::n_ctx, and returns the most
     // likely next token.
-    std::variant<Token, CudaError> decode(Decoder<C>& d, Token token);
+    std::variant<Token<Model>, CudaError> decode(Decoder<C>& d, Token<Model> token);
 
     // The same step, with every phase taking its operands from another implementation's
     // trace of this position. See Decoder::decode_from.
-    std::variant<Token, CudaError> decode_from(Decoder<C>& d, Token token, const Trace& from);
+    std::variant<Token<Model>, CudaError> decode_from(Decoder<C>& d, Token<Model> token,
+                                                      const Trace<Model>& from);
 };
 
 // megakernel.cu defines the members for this configuration.
-extern template struct Megakernel<EngineConfig>;
+extern template struct Megakernel<BuildConfig>;
 } // namespace mk

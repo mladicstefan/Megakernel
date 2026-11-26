@@ -36,6 +36,8 @@ struct Rtx4070TiSuper {
     static constexpr unsigned      shared_reserved_per_block = 1024;
     // The megakernel's blocks per SM. Measured over 141 positions: 2.27 ms per step with 2
     // blocks per SM, 2.29 with 1, 2.30 with 3, 2.43 with 4. More than 4 do not fit on an SM.
+    // shortcut: measured with Qwen3-0.6B's 256 threads a block, which the model derives;
+    // measure again for a model whose n_head / n_head_kv * head_dim differs.
     static constexpr unsigned blocks_per_sm = 2;
 };
 static_assert(GpuSpec<Rtx4070TiSuper>);

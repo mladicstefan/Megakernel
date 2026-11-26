@@ -22,10 +22,14 @@ Components live in directories under `src/`, executables under `apps/`, and test
 - `src/gguf/`: `reader.{hpp,cpp}` (Cursor, MappedFile, `parse()`), `emitter.{hpp,cpp}`
   (`emit()`).
 - `src/model/`: `model_types.hpp` (the types generated headers use).
-- `src/config/`: `config.hpp` (the configuration types every kernel is a template over),
-  `gpu.hpp` (GPUs as types: who each is, what it holds, the megakernel's measured blocks
-  per SM), `kv_format.hpp` (KV cache formats as types), `row_kernel.hpp` (row kernels as
-  types).
+- `src/config/`: `config.hpp` (the configuration types every kernel is a template over,
+  `EngineConfig<Model, Gpu>`), `build.hpp` (`BuildModel` and `BuildConfig`, what this build
+  names; only a build with a decoder has them), `model_spec.hpp` (`ModelSpec`, what a
+  decoder needs from a model), `gpu.hpp` (GPUs as types: who each is, what it holds, the
+  megakernel's measured blocks per SM), `kv_format.hpp` (KV cache formats as types),
+  `row_kernel.hpp` (row kernels as types).
+- `src/arch/`: one model type per architecture, every member read from `model.hpp`:
+  `qwen3.hpp` (`Qwen3`).
 - `src/weights/`: `weights.{hpp,cu}` (the weights on the GPU), `verified_file.hpp`,
   `verified_device.hpp` (the device check `Megakernel::make` requires), `checksum.hpp`.
 - `src/megakernel/`: `megakernel.{hpp,cu}` (one kernel launch per decode step, qwen3 only),
@@ -37,12 +41,14 @@ Components live in directories under `src/`, executables under `apps/`, and test
 - `apps/engine/main.cpp`: the engine. `apps/gguf2hpp/main.cpp`: the `gguf2hpp` CLI.
   `apps/forward/main.cpp`: the `forward` CLI, which decodes token IDs with the megakernel
   or the reference pass, checks the first against the second, and the second against a
-  llama.cpp dump.
+  llama.cpp dump. `apps/gguf_architecture/main.cpp`: prints a GGUF's
+  `general.architecture`; CMake runs it at configure time.
 - `tools/reference/`: the llama.cpp harness that makes the dumps (its own CMake project).
 - `tests/`: `gguf/reader_test.cpp` and `gguf/emitter_test.cpp` (one gtest binary,
   `reader_test`); `weights/checksum_test.cpp`, `base/numeric_test.cpp`,
-  `reference/compare_test.cpp`, `decode/positions_test.cpp` and
-  `megakernel/schedule_test.cpp` (one binary, `host_test`);
+  `reference/compare_test.cpp`, `decode/positions_test.cpp`,
+  `megakernel/schedule_test.cpp` and `config/model_spec_test.cpp` (one binary,
+  `host_test`);
   `weights/weights_test.cpp` (needs `MODEL_GGUF` and a GPU); `smoke_test.cpp`.
 - `tests/data/`: `toy.gguf` (384 bytes, the main fixture), `make_test_gguf.py`, and a uv
   venv with gguf-py (`tests/data/.venv/bin/python -I`).
@@ -59,7 +65,11 @@ cmake -S . -B build && cmake --build build -j && ctest --test-dir build
 
 - **Engine:** the target exists only when configured for a model:
   `-DMODEL_GGUF=$PWD/models/Qwen_Qwen3-0.6B-bf16.gguf`. Use a separate build directory
-  for that.
+  for that. The configure reads the file's `general.architecture` with the project's
+  reader (`gguf_architecture`, compiled at the first configure) and looks it up in the
+  table in `CMakeLists.txt`. An architecture in the table gets its model type
+  (`-DMK_MODEL`), the decoders and `forward`; any other builds the engine that uploads and
+  checksums. Another model of a listed architecture is another `MODEL_GGUF` and no edit.
 - **GPU:** `-DMK_GPU=<type>` names the GPU, a type in `src/config/gpu.hpp` (default
   `Rtx4070TiSuper`; `Rtx5070` compiles but has never run). CMake's table next to it gives
   the CUDA architecture, and the build compiles that one only. Another Nvidia GPU is a type

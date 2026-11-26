@@ -19,6 +19,8 @@ exceeded. The target exists only when `MODEL_GGUF` is a `qwen3` model.
 - `fwd-deterministic`: two runs print the same lines, apart from the `decode:` timing.
 - `fwd-arch-gate`: configuring for a GGUF whose `general.architecture` is not `qwen3`
   prints `No forward pass for this architecture` and builds the engine without `forward`.
+  A qwen3 file gets `forward` wherever the key is in the file (see `build-arch` in
+  [build-integration.md](./build-integration.md)).
 - `fwd-errors`: bad arguments print the usage line and exit 2. An unreadable token file, an
   ID outside the vocabulary, a file without IDs, a missing or wrong-size dump tensor, a
   wrong model file, and more positions than the build's KV cache holds each print one line
@@ -114,10 +116,12 @@ Preconditions:
   only. It prints `1 to generate` whatever `--generate` says.
 - Top-1 agreement is not guaranteed for other prompts. On `planets` the largest logit
   difference is 0.16 and the smallest gap between llama.cpp's best two tokens is 0.13.
-- CMake reads `general.architecture` from the first 4096 bytes of the GGUF at configure
-  time. A file where that key is not first gets no `forward` target. A wrong reading
-  cannot build the wrong pass: `forward.hpp` has a `static_assert` on the architecture.
+- CMake reads `general.architecture` with the project's reader at configure time, and
+  names the model type `Qwen3` (`src/arch/qwen3.hpp`) for `qwen3`. A stale configure
+  cannot build the wrong pass: `qwen3.hpp` has a `static_assert` on the architecture.
 - The ctest entries are added only when the dump exists at configure time. After creating
   the dump, rerun `cmake`.
 - A model whose matrices are not BF16, or whose norm weights are not F32, fails a
-  `static_assert` in `src/reference/forward.hpp`.
+  `static_assert` in `src/arch/qwen3.hpp`.
+- The KV cache holds 4,096 positions, or the model's `context_length` if that is fewer:
+  `EngineConfig<Model, Gpu>::n_ctx`. The `positions are more than the <n>` errors print it.

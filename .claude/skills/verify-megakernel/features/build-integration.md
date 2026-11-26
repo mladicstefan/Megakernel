@@ -19,6 +19,14 @@ exactly the steps they affect.
   generation or recompiling `weights.cu`.
 - `build-weights-only`: touching `src/weights/weights.cu` recompiles it and relinks the
   engine without recompiling `main.cpp`.
+- `build-arch`: configuring prints `MODEL_GGUF architecture: '<name>'`, the file's
+  `general.architecture` exactly, wherever the key is in the file. The project's reader
+  reads it: CMake compiles `gguf_architecture` from the reader's sources at the first
+  configure (about 2.5 s, and again when they change) and runs it on every configure. A
+  name in the table in `CMakeLists.txt` (`qwen3`) gets its model type and the decoders. Any
+  other name, or none, prints `No forward pass for this architecture: only the engine is
+  built`. A file the reader rejects stops the configure with one `MODEL_GGUF: <path>: <what>
+  at byte <n>`, as does a `general.architecture` that is not a string or holds a NUL byte.
 - `build-gpu`: configuring prints `MK_GPU: Rtx4070TiSuper, CUDA architectures: 89`, and
   every `.cu` file compiles for that architecture alone. `-DMK_GPU=Rtx5070` prints `120`.
   An unknown `MK_GPU` stops the configure with `MK_GPU=<name> is not a GPU this build
@@ -58,6 +66,17 @@ Preconditions:
 - **Weights changed.** Run `touch src/weights/weights.cu`, then the same build. Expect
   `Building ... weights.cu.o`, `Linking ... libweights.a` and `Linking ... engine`, with no
   `Generating` line and no `main.cpp.o` line.
+- **Architecture.** `engine.configure.log` of the toy run has `MODEL_GGUF architecture:
+  'toy'` and `No forward pass for this architecture`. In a run of its own, `RUN_ID=<id2> $V
+  craft qwen3 m 512 1536 4 2 128 2 1024 arch-last` writes a qwen3 file whose
+  `general.architecture` is its last key; `RUN_ID=<id2> $V engine $S2/craft/m.gguf` prints
+  `'qwen3'` and `cmake --build $S2/engine-build --target forward` builds. Configure a
+  directory by hand with `-DMODEL_GGUF` set to a truncated copy of toy (`head -c 100`):
+  expect exit 1 and one `CMake Error` block ending in `truncated at byte 98`. Measured on
+  2026-11-26, with files made by `craft` and by hand: a random file gives `not a GGUF file
+  (bad magic) at byte 0`, a missing one `cannot open`, a `uint32` architecture `is not a
+  string`, one with a NUL byte `holds a NUL byte`, and `qwen3;x` with a newline configures
+  with no forward pass.
 - **GPU.** After `engine`, run
   `grep MK_GPU build/verify-evidence/<id>/engine.configure.log` and
   `grep -o -- '--generate-code=[^ "]*' $S/engine-build/compile_commands.json | sort | uniq -c`.
@@ -80,3 +99,6 @@ Preconditions:
   Engine code that names `model::layers` must include it and must read a layer only when
   `mk::layer_count > 0`, at compile time.
 - Pass an absolute `MODEL_GGUF`. `engine` resolves it with `realpath`; by hand, use `$PWD/...`.
+- The architecture is read when CMake configures, not when the GGUF changes. Replacing the
+  file with one of another architecture needs a reconfigure; until then `src/arch/qwen3.hpp`
+  fails a `static_assert` on `general.architecture` rather than building the wrong decoder.
