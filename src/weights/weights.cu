@@ -1,6 +1,8 @@
 #include "weights/weights.hpp"
 
 #include "base/cuda_try.hpp"
+#include "config/checksum_kernel.hpp"
+#include "config/platform.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -14,10 +16,12 @@ double seconds_since(Clock::time_point start) {
     return std::chrono::duration<double>(Clock::now() - start).count();
 }
 
-// 4 blocks of 256 threads per SM. Measured on the 4070 Ti SUPER: 1 block reads at 422 GB/s,
-// 4 at 623, 8 at 615 (docs/PLAN.md, Phase B).
-constexpr unsigned kBlocks = BuildGpu::sms * 4;
-constexpr unsigned kThreads     = 256; // a multiple of 32: add_checksum reduces whole warps
+// The checksum kernel's launch: its blocks on each SM of the GPU this build is for.
+using Launch = Checksum256x4;
+static_assert(ChecksumKernel<Launch>);
+constexpr unsigned kBlocks  = BuildGpu::sms * Launch::blocks_per_sm;
+constexpr unsigned kThreads = Launch::threads;
+static_assert(kThreads % warp_size == 0, "add_checksum reduces whole warps");
 
 // Each tensor's offset and size in words. The kernel indexes this with a run-time tensor
 // number, which it cannot do with model::tensors itself (a std::array of host types).
@@ -30,7 +34,7 @@ constexpr Extents make_extents() {
     Extents e{};
     for (std::size_t i = 0; i < tensor_count; ++i) {
         e.offset[i] = model::tensors[i].offset;
-        e.words[i]  = model::tensors[i].bytes / 8;
+        e.words[i]  = model::tensors[i].bytes / checksum_word_bytes;
     }
     return e;
 }
@@ -49,11 +53,11 @@ __device__ void add_checksum(const std::byte* data, std::uint64_t n_words, std::
          i += n_threads) {
         sum += checksum_term(words[i], i);
     }
-    for (unsigned lanes = 16; lanes > 0; lanes /= 2) {
-        sum += __shfl_xor_sync(0xffffffffu, sum, lanes);
+    for (unsigned lanes = warp_size / 2; lanes > 0; lanes /= 2) {
+        sum += __shfl_xor_sync(full_warp_mask, sum, lanes);
     }
     // A warp with no words of this tensor has sum 0 and skips the atomic.
-    if (threadIdx.x % 32 == 0 && sum != 0) {
+    if (threadIdx.x % warp_size == 0 && sum != 0) {
         static_assert(sizeof(unsigned long long) == sizeof(std::uint64_t));
         atomicAdd(reinterpret_cast<unsigned long long*>(out), static_cast<unsigned long long>(sum));
     }
@@ -73,7 +77,7 @@ __global__ void checksum_kernel(Weights w, std::uint64_t* sums) {
 template <std::size_t I>
 __global__ void layer_q_kernel(Weights w, std::uint64_t* sum) {
     constexpr auto L = model::layers[I];
-    add_checksum(w.base + L.q.offset, L.q.bytes / 8, sum);
+    add_checksum(w.base + L.q.offset, L.q.bytes / checksum_word_bytes, sum);
 }
 
 // A template only so that a model without a layer table never instantiates the kernel.

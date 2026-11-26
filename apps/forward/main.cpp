@@ -1,4 +1,5 @@
 #include "decode/greedy.hpp"
+#include "decode/positions.hpp"
 #include "megakernel/megakernel.hpp"
 #include "reference/compare.hpp"
 #include "reference/forward.hpp"
@@ -68,7 +69,7 @@ struct Options {
     std::string                          model = MODEL_GGUF;
     std::string                          tokens;
     std::optional<std::filesystem::path> compare;
-    std::size_t                          generate   = 32;
+    std::size_t                          generate   = mk::default_generate;
     bool                                 per_op     = false;
     bool                                 megakernel = false;
     bool                                 check      = false;

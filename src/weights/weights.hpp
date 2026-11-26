@@ -42,9 +42,11 @@ static_assert(std::ranges::all_of(model::tensors,
               "a tensor's offset is not a multiple of general.alignment");
 // shortcut: the checksum reads aligned 8-byte words only, add a tail word when a model has a
 // tensor that is not a whole number of them.
-static_assert(model::alignment % 8 == 0 &&
+static_assert(model::alignment % checksum_word_bytes == 0 &&
                   std::ranges::all_of(model::tensors,
-                                      [](const Tensor& t) { return t.bytes % 8 == 0; }),
+                                      [](const Tensor& t) {
+                                          return t.bytes % checksum_word_bytes == 0;
+                                      }),
               "a tensor is not a whole number of aligned 8-byte words");
 
 // The tensor device_checksums also reads through model::layers: the last layer's q.

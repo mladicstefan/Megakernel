@@ -57,7 +57,9 @@ Each fact gets one owner.
 | `Matrix<S>`, `Vector<S>` | A tensor handle whose type is its shape and dtype and whose value is its offset. A kernel reads rows, columns and format from the type. The 28 layers share one instantiation. | P2 |
 | `arch::qwen3` | What the numbers mean: a `DecoderShape` read from `model.hpp`, and two policy types, `QkNorm` and `Rope`. About 20 lines. | P1, P3 |
 | `Rtx4070TiSuper`, `Rtx5070` | The hardware: SM count, CUDA architecture, memory, shared memory per SM, and the megakernel's `blocks_per_sm`, a measurement on that hardware. | P1 |
-| `EngineConfig<Arch, Gpu>` | One of each, plus the KV format, the context length and the row kernel. `threads` is derived from the model, not chosen. | P7 |
+| `EngineConfig<Arch, Gpu>` | One of each, plus the KV format, the context length (`MK_N_CTX`, capped by the model's), the row kernel, the reference pass's block size and the barrier's spin limit. `threads` is derived from the model, not chosen. | P7 |
+| `platform.hpp` | What holds on every Nvidia GPU, so on no GPU type: the warp size, the full-warp mask and the 48 KB static shared memory limit. One named constant each. | P1 |
+| `Checksum256x4` | The weights' checksum kernel's launch, behind the `ChecksumKernel` concept, with the measurement it comes from. | P7 |
 | `schedule.hpp` | Every proof, as functions over plain numbers with one named assertion per fact: the row split, the attention split, the phase order, the barrier count, shared memory, device memory. | P5 |
 | `VerifiedDevice<G>` | The device check, made once, as a type the megakernel requires. | P6 |
 
@@ -97,6 +99,7 @@ runs of `forward --megakernel --generate 128`.
 | 4 | **Done.** `VerifiedDevice<G>` replaces the two copies of the SM check. `Megakernel<C>::make` takes a `VerifiedDevice<C::Gpu>`, which only `VerifiedDevice<G>::check()` makes, so a caller that skips the check does not compile. The upload and the reference pass do not take one: neither depends on the SM count. | P6 |
 | 5 | Typed tensor handles replace the offset tables and the dtype casts. | P2 |
 | 6 | **Done.** The model is a type, `Qwen3` in `src/arch/qwen3.hpp`, behind `ModelSpec`, and `EngineConfig<Model, Gpu>` is the configuration, named for the build as `BuildConfig`. The globals in `forward.hpp` go, `threads` and `n_ctx` are derived from the model, and a model that needs more than a block's 48 KB of static shared memory, such as Qwen3-4B, fails on its own assertion. CMake reads `general.architecture` with the project's reader, through `gguf_architecture`, and a table maps it to the model type. | a second size of the same architecture |
+| 6a | **Done.** No bare number in a kernel: each has one owner. The warp size, the full-warp mask and the static shared memory limit are in `platform.hpp`, the reference pass's block size and the barrier's spin limit are members of `EngineConfig` behind their concepts, the checksum kernel's launch is a type, `RowDot8`'s step and alignment derive from the warp size, and the context cap is the CMake option `MK_N_CTX`. The gate's numbers and the SASS are unchanged. | the hardware and tuning axes |
 | 7 | The megakernel gets its own library and its own sequence state. The engine no longer links the reference pass. The rounding flag becomes the reference pass's policy. | P3, P7 |
 | 8 | Q/K norm and the RoPE pairing become the architecture's policies. Tied output weights fall back to the embedding. `gguf2hpp` skips a key it cannot name. | a second architecture |
 | 9 | Test fixtures are keyed by the model. | a second model's tests |

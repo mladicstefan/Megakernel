@@ -124,4 +124,4 @@ Preconditions:
 - A model whose matrices are not BF16, or whose norm weights are not F32, fails a
   `static_assert` in `src/arch/qwen3.hpp`.
 - The KV cache holds 4,096 positions, or the model's `context_length` if that is fewer:
-  `EngineConfig<Model, Gpu>::n_ctx`. The `positions are more than the <n>` errors print it.
+  `EngineConfig<Model, Gpu>::n_ctx`. The 4,096 is CMake's `MK_N_CTX`. The `positions are more than the <n>` errors print it.

@@ -90,8 +90,8 @@ Preconditions:
   $S/craft/m.gguf.tokens.txt --generate <n>` with that of `$F --generate <n>
   $S/craft/m.gguf.tokens.txt`, the reference pass. No source edit: the model type reads
   the shape from `model.hpp`, a block has `heads / kv_heads * head_dim` threads (the PTX's
-  `.maxntid` in `megakernel.cu.o`), and the KV cache holds 4,096 positions or the
-  `context_length` if fewer (the `positions are more than the <n>` refusal prints it). Every
+  `.maxntid` in `megakernel.cu.o`), and the KV cache holds `MK_N_CTX` (4,096) positions or
+  the `context_length` if fewer (the `positions are more than the <n>` refusal prints it). Every
   width must be a multiple of 256 and `head_dim` of 32. Each fact the grid relies on is its
   own `static_assert` in `megakernel.cu`, over a proof in `schedule.hpp`, so a shape that
   breaks one fails to build with that fact's message. Measured on 2026-11-26, after the

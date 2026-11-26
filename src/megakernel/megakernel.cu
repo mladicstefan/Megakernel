@@ -12,9 +12,6 @@
 
 namespace mk {
 namespace {
-// About a second of spinning. A barrier that waits this long will never be met.
-constexpr unsigned kSpinLimit = 1u << 27;
-
 // What the kernel derives from the model's numbers.
 template <MegakernelConfig C>
 constexpr unsigned kQ = C::Model::n_head * C::Model::head_dim; // the width of Q and of kqv_out
@@ -27,7 +24,7 @@ template <MegakernelConfig C>
 constexpr unsigned kHalf = C::Model::head_dim / 2;
 // Head dimensions one lane of a warp holds.
 template <MegakernelConfig C>
-constexpr unsigned kLaneDims = C::Model::head_dim / 32;
+constexpr unsigned kLaneDims = C::Model::head_dim / warp_size;
 // The longest vector xs holds.
 template <MegakernelConfig C>
 constexpr unsigned kWidest = std::max({C::Model::n_embd, kQ<C>, C::Model::n_ff});
@@ -95,8 +92,8 @@ __device__ float fresh(const float* p) {
 template <MegakernelConfig C>
 __device__ float block_sum(float v, float* scratch) {
     v = warp_sum(v);
-    if (threadIdx.x % 32 == 0) {
-        scratch[threadIdx.x / 32] = v;
+    if (threadIdx.x % warp_size == 0) {
+        scratch[threadIdx.x / warp_size] = v;
     }
     __syncthreads();
     float total = 0;
@@ -120,7 +117,7 @@ __device__ void barrier(MegaSync<C>* sync, unsigned target) {
         unsigned                 spins   = 0;
         // The difference as a signed number, so the count may wrap around.
         while (static_cast<int>(*arrived - target) < 0) {
-            if (++spins > kSpinLimit || *failed != 0) {
+            if (++spins > C::barrier_spin_limit || *failed != 0) {
                 atomicExch(&sync->failed, 1u);
                 break;
             }
@@ -157,7 +154,7 @@ __device__ void load_normed(const float* x, const float* weight, unsigned n, flo
 
 template <MegakernelConfig C>
 __device__ Rows my_rows(unsigned rows) {
-    return rows_of(blockIdx.x * Grid<C>::warps_per_block + threadIdx.x / 32, rows,
+    return rows_of(blockIdx.x * Grid<C>::warps_per_block + threadIdx.x / warp_size, rows,
                    Grid<C>::warps);
 }
 
@@ -167,7 +164,7 @@ __device__ void for_rows(const std::uint16_t* w, unsigned rows, const float* xs,
     const Rows mine = my_rows<C>(rows);
     for (unsigned r = mine.begin; r < mine.end; ++r) {
         const float y = C::RowKernel::template dot<Cols>(w + std::size_t{r} * Cols, xs);
-        if (threadIdx.x % 32 == 0) {
+        if (threadIdx.x % warp_size == 0) {
             store(r, y);
         }
     }
@@ -264,8 +261,8 @@ __device__ void attention_part(unsigned kv_head, unsigned member,
     __syncthreads();
 
     // An online softmax over this warp's positions, for both query heads.
-    const unsigned warp   = t / 32;
-    const unsigned dim    = (t % 32) * kLaneDims<C>; // this lane's first dimension
+    const unsigned warp   = t / warp_size;
+    const unsigned dim    = (t % warp_size) * kLaneDims<C>; // this lane's first dimension
     const float    scaled = 1.0f / sqrtf(n);
     float          max[kGroup<C>];
     float          sum[kGroup<C>] = {};
@@ -308,7 +305,7 @@ __device__ void attention_part(unsigned kv_head, unsigned member,
         for (unsigned d = 0; d < kLaneDims<C>; ++d) {
             warp_acc[warp][h][dim + d] = acc[h][d];
         }
-        if (t % 32 == 0) {
+        if (t % warp_size == 0) {
             warp_max[warp][h]  = max[h];
             warp_sum_[warp][h] = sum[h];
         }
@@ -475,7 +472,7 @@ struct FfnPhase {
         for (unsigned r = mine.begin; r < mine.end; ++r) {
             const float g = C::RowKernel::template dot<kEmbd>(gate + std::size_t{r} * kEmbd, s.xs);
             const float u = C::RowKernel::template dot<kEmbd>(up + std::size_t{r} * kEmbd, s.xs);
-            if (threadIdx.x % 32 == 0) {
+            if (threadIdx.x % warp_size == 0) {
                 s.out->ffn_swiglu[r] = g / (1.0f + expf(-g)) * u;
             }
         }
@@ -542,9 +539,9 @@ megakernel(Weights weights, Trace<typename C::Model>* out, const Trace<typename 
                   "kernel with a smaller step");
     static_assert(each_kv_head_has_a_block(Grid<C>::blocks, M::n_head_kv),
                   "the grid has fewer blocks than the model has KV heads: raise blocks_per_sm");
-    static_assert(M::head_dim % 32 == 0,
-                  "head_dim is not a multiple of 32: attention gives each lane of a warp "
-                  "head_dim / 32 of a head's dimensions");
+    static_assert(M::head_dim % warp_size == 0,
+                  "head_dim is not a multiple of the warp size: attention gives each lane of a "
+                  "warp head_dim / warp size of a head's dimensions");
     static_assert(one_thread_per_group_dimension(Grid<C>::threads, kGroup<C>, M::head_dim),
                   "attention needs one thread per dimension of each query head of a group: set "
                   "threads to n_head / n_head_kv * head_dim");
@@ -622,7 +619,7 @@ megakernel(Weights weights, Trace<typename C::Model>* out, const Trace<typename 
         for (unsigned r = mine.begin; r < mine.end; ++r) {
             const float y =
                 C::RowKernel::template dot<M::n_embd>(w + std::size_t{r} * M::n_embd, xs);
-            if (threadIdx.x % 32 == 0) {
+            if (threadIdx.x % warp_size == 0) {
                 out->result_output[r] = y;
                 if (y > best) {
                     best = y;
@@ -630,9 +627,9 @@ megakernel(Weights weights, Trace<typename C::Model>* out, const Trace<typename 
                 }
             }
         }
-        if (threadIdx.x % 32 == 0) {
-            warp_logit[threadIdx.x / 32] = best;
-            warp_token[threadIdx.x / 32] = at;
+        if (threadIdx.x % warp_size == 0) {
+            warp_logit[threadIdx.x / warp_size] = best;
+            warp_token[threadIdx.x / warp_size] = at;
         }
         __syncthreads();
         if (threadIdx.x == 0) {
