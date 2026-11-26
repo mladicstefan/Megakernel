@@ -86,8 +86,7 @@ struct Upload {
 // Allocates on the device and copies data there.
 std::variant<Upload, CudaError> upload(HostWeights data);
 
-// The SM count of the device in use. A build is compiled for EngineConfig::Gpu::sms of
-// them, and nothing may launch a kernel on a device with another count.
+// The SM count of the device in use. VerifiedDevice compares it with the build's GPU.
 std::variant<unsigned, CudaError> device_sms();
 
 struct Checksums {

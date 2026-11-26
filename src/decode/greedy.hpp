@@ -59,13 +59,13 @@ struct Generation {
 };
 
 // Decodes prompt, then generates `generate` tokens, each the most likely one. The caller
-// has checked that the positions fit C::n_ctx and that the GPU is C::Gpu.
+// has checked that the positions fit C::n_ctx.
 template <MegakernelConfig C>
-std::expected<Generation, std::string> generate_greedy(Weights weights,
-                                                       std::span<const Token> prompt,
-                                                       std::size_t generate) {
+std::expected<Generation, std::string>
+generate_greedy(const VerifiedDevice<typename C::Gpu>& device, Weights weights,
+                std::span<const Token> prompt, std::size_t generate) {
     auto made_decoder = Decoder<C>::make(weights);
-    auto made_kernel  = Megakernel<C>::make();
+    auto made_kernel  = Megakernel<C>::make(device);
     const auto error  = [](const CudaError& e) {
         return std::unexpected(std::format("{}: {}", e.call, e.text));
     };

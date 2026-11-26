@@ -25,6 +25,8 @@ difference per tensor and exits 1 when a limit is exceeded.
 - `mega-gpu`: on a GPU with another SM count than the build's, it exits 1 with `built for
   the <name> (<n> SMs), this GPU has <m> SMs`. A `-DMK_GPU=Rtx5070` build drives it on the
   development machine: `built for the RTX 5070 (48 SMs), this GPU has 66 SMs`.
+  `Megakernel<C>::make` takes the `VerifiedDevice<C::Gpu>` that this check makes
+  (`src/weights/verified_device.hpp`), so a caller that skips it does not compile.
 - `mega-capacity`: a configuration the GPU cannot hold fails to build, one message per
   fact: blocks per SM whose shared memory does not fit on an SM, a KV cache that does not
   fit in device memory next to the weights, and an `n_ctx` past the model's

@@ -17,7 +17,7 @@ Every rule about structure in this codebase is one of these.
 | P3 | Policy by overload | A choice inside an algorithm is a tag type, and each implementation overloads on it. No flag, no branch. | nowhere: `llama_cpu_rounding` is a `bool` |
 | P4 | Type list, folded | An ordered list of types run by a fold expression. The schedule is a type. | `LayerPhases`, `run_layer` |
 | P5 | Proof as a constant | A `constexpr` function over plain numbers, asserted where it is used, and fed failing numbers by a host test. | `schedule.hpp`, tested by `schedule_test` |
-| P6 | Proof-carrying value | A run-time fact is checked once, and the result is a type only that check can make. | `VerifiedFile`, `Token`, `HostWeights` |
+| P6 | Proof-carrying value | A run-time fact is checked once, and the result is a type only that check can make. | `VerifiedFile`, `VerifiedDevice`, `Token`, `HostWeights` |
 | P7 | One build type | One type names one of each choice, and one translation unit instantiates the templates for it. | `EngineConfig`, without the model and with the GPU fixed |
 
 ## What the review found
@@ -89,7 +89,7 @@ runs of `forward --megakernel --generate 128`.
 | 1 | **Done.** Fix the bugs that give wrong output: the attention merge loads every member's partial, the shared buffer is sized by the widest vector, the row kernel's alignment is asserted, and `--generate` is range-checked. The repros are the verify skill's "Other shapes" recipe and three tests. | correctness on other shapes |
 | 2 | **Done.** The proofs live in `src/megakernel/schedule.hpp`, and `megakernel.cu` asserts each fact with its own message. `tests/megakernel/schedule_test.cpp` feeds every proof failing numbers. | P5 |
 | 3 | **Done.** The GPU type carries its CUDA architecture, its capacity and the megakernel's measured `blocks_per_sm`. `MK_GPU` picks it, the build compiles one architecture, a `static_assert` on `__CUDA_ARCH__` rejects another, and `schedule.hpp` proves shared memory, device memory and the context length. `Rtx5070` is a compile-only target. | the hardware axis |
-| 4 | `VerifiedDevice<G>` replaces the two copies of the SM check. | P6 |
+| 4 | **Done.** `VerifiedDevice<G>` replaces the two copies of the SM check. `Megakernel<C>::make` takes a `VerifiedDevice<C::Gpu>`, which only `VerifiedDevice<G>::check()` makes, so a caller that skips the check does not compile. The upload and the reference pass do not take one: neither depends on the SM count. | P6 |
 | 5 | Typed tensor handles replace the offset tables and the dtype casts. | P2 |
 | 6 | `arch::qwen3` and `EngineConfig<Arch, Gpu>`. The globals in `forward.hpp` go, `threads` is derived, and CMake parses the architecture from the GGUF's bytes exactly. | a second size of the same architecture |
 | 7 | The megakernel gets its own library and its own sequence state. The engine no longer links the reference pass. The rounding flag becomes the reference pass's policy. | P3, P7 |

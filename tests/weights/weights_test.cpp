@@ -1,9 +1,12 @@
 #include "gguf/reader.hpp"
+#include "weights/verified_device.hpp"
 #include "weights/weights.hpp"
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <span>
+#include <string>
 #include <variant>
 
 #include <gtest/gtest.h>
@@ -65,4 +68,21 @@ TEST_F(WeightsTest, AnOffsetWrongBy32BytesDoesNotMatch) {
     EXPECT_EQ(matched, 0u) << "of " << mk::tensor_count << " tensors";
     // The device did read what was uploaded: the sums are those of the shifted bytes.
     EXPECT_EQ(device.tensors, mk::host_checksums(shifted));
+}
+
+// No device has 0 SMs, so a build for this GPU is refused on every machine.
+struct NoSmGpu {
+    static constexpr const char*   name                      = "no-SM GPU";
+    static constexpr unsigned      sms                       = 0;
+    static constexpr unsigned      cuda_arch                 = 89;
+    static constexpr std::uint64_t device_memory             = 0;
+    static constexpr unsigned      shared_per_sm             = 0;
+    static constexpr unsigned      shared_reserved_per_block = 0;
+};
+
+TEST(VerifiedDevice, RefusesADeviceWithAnotherSmCount) {
+    const auto device = mk::VerifiedDevice<NoSmGpu>::check();
+    ASSERT_FALSE(device.has_value());
+    EXPECT_TRUE(device.error().starts_with("built for the no-SM GPU (0 SMs), this GPU has "))
+        << device.error();
 }

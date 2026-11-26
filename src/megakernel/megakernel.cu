@@ -662,7 +662,8 @@ std::variant<Token, CudaError> launch(Megakernel<C>& m, Decoder<C>& d, Token tok
 } // namespace
 
 template <MegakernelConfig C>
-std::variant<Megakernel<C>, CudaError> Megakernel<C>::make() {
+std::variant<Megakernel<C>, CudaError>
+Megakernel<C>::make(const VerifiedDevice<typename C::Gpu>&) {
     // A barrier waits for every block, so every block must be running. That holds only if
     // each SM can keep its share of the grid resident.
     int resident = 0;

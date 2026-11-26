@@ -27,7 +27,7 @@ Components live in directories under `src/`, executables under `apps/`, and test
   per SM), `kv_format.hpp` (KV cache formats as types), `row_kernel.hpp` (row kernels as
   types).
 - `src/weights/`: `weights.{hpp,cu}` (the weights on the GPU), `verified_file.hpp`,
-  `checksum.hpp`.
+  `verified_device.hpp` (the device check `Megakernel::make` requires), `checksum.hpp`.
 - `src/megakernel/`: `megakernel.{hpp,cu}` (one kernel launch per decode step, qwen3 only),
   `schedule.hpp` (the row split, the phase list and every proof the kernel asserts, as
   constexpr functions that need no model and no GPU).
