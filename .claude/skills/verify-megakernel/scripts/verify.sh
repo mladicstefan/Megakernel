@@ -129,6 +129,41 @@ run-engine) # run-engine <name> [args]: run the engine that `engine` built; reco
     [[ -s $EVIDENCE/$name.stderr ]] && echo "stderr: $(cat "$EVIDENCE/$name.stderr")"
     true
     ;;
+gate) # gate: the megakernel's size on sm_89 and its speed, for the engine that `engine` built
+    eb=$SCRATCH/engine-build g=$SCRATCH/gate cuda=$(dirname "$NVCC") P=$REPO/tests/data/reference/planets
+    obj=$eb/CMakeFiles/forward_pass.dir/src/megakernel.cu.o
+    [[ -f $obj ]] || { echo "FAIL no $obj: run engine with the Qwen model first"; exit 1; }
+    cmake --build "$eb" -j --target forward >"$EVIDENCE/gate.build.log" 2>&1
+    rm -rf "$g" && mkdir -p "$g"
+    sass() { "$cuda/cuobjdump" -sass "$@" | awk '/Function :/ { k = /megakernel/ } k && /^ +\/\*[0-9a-f]{4,}\*\/ +[^ \/].*;/'; }
+    # ptxas reruns on the PTX the build embedded; equal SASS below proves it is the build's compile.
+    (cd "$g" && "$cuda/cuobjdump" -xptx all "$obj" >/dev/null)
+    "$cuda/ptxas" -arch=sm_89 -v "$g"/*.sm_89.ptx -o "$g/k.cubin" >"$EVIDENCE/gate.ptxas.log" 2>&1
+    sass -arch sm_89 "$obj" >"$EVIDENCE/gate.sm_89.sass"
+    sass "$g/k.cubin" | cmp -s - "$EVIDENCE/gate.sm_89.sass" || { echo "FAIL ptxas rerun differs from the build's SASS"; exit 1; }
+    read -r regs smem stores loads < <(awk '/Compiling entry function/ { k = /megakernel/ }
+        k && /spill stores/ { st = $5; ld = $9 } k && /Used [0-9]+ registers/ { r = $5; for (i = 1; i < NF; i++) if ($(i + 1) == "bytes" && $(i + 2) ~ /^smem/) s = $i }
+        END { print r, s, st, ld }' "$EVIDENCE/gate.ptxas.log")
+    busy=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader 2>/dev/null || echo unknown)
+    ms=()
+    for i in 1 2 3; do
+        out=$EVIDENCE/gate.run$i.stdout
+        "$eb/forward" --megakernel --generate 128 "$P/tokens.txt" >"$out" 2>&1 || { echo "FAIL run $i exited $?: $out"; exit 1; }
+        # A fast step that decodes the wrong tokens is no measurement.
+        grep -qF "generated: $(tr -d ']\n' <"$P/greedy.txt")," "$out" || { echo "FAIL run $i: not the reference's greedy tokens: $out"; exit 1; }
+        ms+=("$(sed -n 's/^decode: .*, \([0-9.]*\) ms per step.*/\1/p' "$out")")
+    done
+    read -r lo mid hi < <(printf '%s\n' "${ms[@]}" | sort -n | paste -sd' ')
+    {
+        echo "gate: megakernel, sm_89, $(tree_rev)"
+        echo "registers  $regs"
+        echo "spills     $stores bytes stored, $loads bytes loaded"
+        echo "smem       $smem bytes static"
+        echo "sass       $(wc -l <"$EVIDENCE/gate.sm_89.sass") instructions"
+        echo "ms/step    $mid median of 3 ($lo to $hi), --generate 128, $(grep -o '^decode: [0-9]* steps' "$EVIDENCE/gate.run1.stdout" | cut -d' ' -f2) steps, GPU $busy busy before"
+    } >"$EVIDENCE/gate.txt"
+    cat "$EVIDENCE/gate.txt"
+    ;;
 cleanup)
     rm -rf "$SCRATCH"
     echo "removed $SCRATCH; evidence kept in $EVIDENCE"
