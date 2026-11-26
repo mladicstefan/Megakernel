@@ -21,13 +21,13 @@ concept DecoderConfig = KvFormat<typename C::Kv> && requires {
 };
 
 // What the megakernel needs on top:
-// - Gpu, the GPU the grid is sized for
-// - blocks_per_sm and threads, the grid: every SM runs blocks_per_sm blocks of threads
+// - Gpu, the GPU the grid is sized for, with the megakernel's measured blocks_per_sm
+// - threads, the grid: every SM runs Gpu::blocks_per_sm blocks of threads
 // - RowKernel, how a warp multiplies a BF16 row by a vector
 template <class C>
 concept MegakernelConfig =
     DecoderConfig<C> && GpuSpec<typename C::Gpu> && RowKernel<typename C::RowKernel> && requires {
-        { C::blocks_per_sm } -> std::convertible_to<unsigned>;
+        { C::Gpu::blocks_per_sm } -> std::convertible_to<unsigned>;
         { C::threads } -> std::convertible_to<unsigned>;
     };
 
@@ -39,11 +39,8 @@ struct EngineConfig {
     static constexpr std::uint32_t n_ctx              = 4096;
     static constexpr bool          llama_cpu_rounding = false;
 
-    using Gpu = Rtx4070TiSuper;
-    // Measured with the megakernel over 141 positions: 2.27 ms per step with 2 blocks per
-    // SM, 2.29 with 1, 2.30 with 3, 2.43 with 4. More than 4 do not fit on an SM.
-    static constexpr unsigned blocks_per_sm = 2;
-    static constexpr unsigned threads       = 256;
+    using Gpu = BuildGpu; // the one CMake's MK_GPU names
+    static constexpr unsigned threads = 256;
     using RowKernel = RowDot8;
 };
 static_assert(MegakernelConfig<EngineConfig>);
@@ -57,11 +54,12 @@ struct LlamaCpuConfig {
 };
 static_assert(DecoderConfig<LlamaCpuConfig>);
 
-// The megakernel's grid for a configuration, derived from its GPU's SM count.
+// The megakernel's grid for a configuration, derived from its GPU's SM count and blocks per
+// SM.
 template <MegakernelConfig C>
 struct Grid {
     static constexpr unsigned threads         = C::threads;
-    static constexpr unsigned blocks          = C::Gpu::sms * C::blocks_per_sm;
+    static constexpr unsigned blocks          = C::Gpu::sms * C::Gpu::blocks_per_sm;
     static constexpr unsigned warps_per_block = threads / 32;
     static constexpr unsigned warps           = blocks * warps_per_block;
     static_assert(threads % 32 == 0, "a block is a whole number of warps");

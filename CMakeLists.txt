@@ -1,8 +1,18 @@
 cmake_minimum_required(VERSION 3.28)
 
-if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-  set(CMAKE_CUDA_ARCHITECTURES 89 120)
+# The GPU the build is for, named once: a type in src/config/gpu.hpp, and here its CUDA
+# architecture. CUDA compiles for that one, and gpu.hpp static_asserts that the two agree.
+set(MK_GPU Rtx4070TiSuper CACHE STRING "The GPU to compile for: a type in src/config/gpu.hpp")
+set(MK_GPU_ARCH_Rtx4070TiSuper 89)
+set(MK_GPU_ARCH_Rtx5070 120)
+if(NOT DEFINED MK_GPU_ARCH_${MK_GPU})
+  message(FATAL_ERROR "MK_GPU=${MK_GPU} is not a GPU this build knows: add its type to "
+    "src/config/gpu.hpp and its architecture here")
 endif()
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+  set(CMAKE_CUDA_ARCHITECTURES ${MK_GPU_ARCH_${MK_GPU}})
+endif()
+message(STATUS "MK_GPU: ${MK_GPU}, CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
 
 project(comptime_megakernel LANGUAGES CXX CUDA)
 
@@ -93,6 +103,8 @@ if(MODEL_GGUF)
   add_library(weights STATIC src/weights/weights.cu ${GEN_DIR}/model.hpp)
   # src: the generated header includes model/model_types.hpp from there.
   target_include_directories(weights PUBLIC ${GEN_DIR} ${CMAKE_SOURCE_DIR}/src)
+  # gpu.hpp's BuildGpu: everything that includes it links weights.
+  target_compile_definitions(weights PUBLIC MK_GPU=${MK_GPU})
 
   add_executable(engine apps/engine/main.cpp ${GEN_DIR}/model.hpp)
   # gguf_header: the engine checks its file with the reader's own parse() and hash.

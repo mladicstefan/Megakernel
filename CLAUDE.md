@@ -23,8 +23,9 @@ Components live in directories under `src/`, executables under `apps/`, and test
   (`emit()`).
 - `src/model/`: `model_types.hpp` (the types generated headers use).
 - `src/config/`: `config.hpp` (the configuration types every kernel is a template over),
-  `gpu.hpp` (GPUs as types), `kv_format.hpp` (KV cache formats as types), `row_kernel.hpp`
-  (row kernels as types).
+  `gpu.hpp` (GPUs as types: who each is, what it holds, the megakernel's measured blocks
+  per SM), `kv_format.hpp` (KV cache formats as types), `row_kernel.hpp` (row kernels as
+  types).
 - `src/weights/`: `weights.{hpp,cu}` (the weights on the GPU), `verified_file.hpp`,
   `checksum.hpp`.
 - `src/megakernel/`: `megakernel.{hpp,cu}` (one kernel launch per decode step, qwen3 only),
@@ -59,6 +60,10 @@ cmake -S . -B build && cmake --build build -j && ctest --test-dir build
 - **Engine:** the target exists only when configured for a model:
   `-DMODEL_GGUF=$PWD/models/Qwen_Qwen3-0.6B-bf16.gguf`. Use a separate build directory
   for that.
+- **GPU:** `-DMK_GPU=<type>` names the GPU, a type in `src/config/gpu.hpp` (default
+  `Rtx4070TiSuper`; `Rtx5070` compiles but has never run). CMake's table next to it gives
+  the CUDA architecture, and the build compiles that one only. Another Nvidia GPU is a type
+  in `gpu.hpp`, a line in that table and a recompile.
 - **Sanitizers:** use a separate build directory with `-DENABLE_SANITIZERS=ON` (ASan and
   UBSan, host code only; use `compute-sanitizer` for kernels).
 - **Offline configure of a new build directory:** reuse the fetched sources with
@@ -72,8 +77,9 @@ cmake -S . -B build && cmake --build build -j && ctest --test-dir build
 ## Language and style
 
 - Host code is C++23 with GCC. **Anything nvcc compiles or includes is C++20:**
-  `model_types.hpp`, generated headers, and all device code. CUDA architectures are 89
-  and 120.
+  `model_types.hpp`, generated headers, and all device code. A build compiles device code
+  for one CUDA architecture, its GPU type's `cuda_arch`, and a `static_assert` on
+  `__CUDA_ARCH__` in `gpu.hpp` rejects any other.
 - Warnings are strict (`-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion
   -Wold-style-cast` and more). Keep the build warning-free.
 - Compile time only. A choice that the model or the build fixes is a type or a constant,

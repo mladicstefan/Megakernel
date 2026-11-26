@@ -1,5 +1,7 @@
 #include "megakernel/schedule.hpp"
 
+#include <cstdint>
+
 #include <gtest/gtest.h>
 
 namespace {
@@ -112,6 +114,70 @@ TEST(AttentionMerge, NeedsOneThreadPerGroupDimension) {
     EXPECT_FALSE(mk::one_thread_per_group_dimension(128, kGroup, kHeadDim));
     EXPECT_FALSE(mk::one_thread_per_group_dimension(512, kGroup, kHeadDim));
     EXPECT_TRUE(mk::one_thread_per_group_dimension(512, 4, kHeadDim)); // Qwen3-4B: 32 / 8 heads
+}
+
+// The RTX 4070 Ti SUPER's shared memory, as cudaGetDeviceProperties reports it.
+constexpr unsigned kSharedPerSm = 102400;
+constexpr unsigned kReserved    = 1024; // per block
+
+// The megakernel's shared memory for Qwen3-0.6B with blocks_per_sm blocks on each of 66 SMs.
+// More blocks give a KV head more members, and the merge one more value per member.
+constexpr std::uint64_t qwen_shared_bytes(unsigned blocks_per_sm) {
+    return mk::megakernel_shared_bytes(kFf, kThreads / 32, kGroup, kHeadDim,
+                                       66 * blocks_per_sm / kKvHeads);
+}
+
+TEST(SharedMemory, CountsTheBytesPtxasGivesQwen) {
+    EXPECT_EQ(qwen_shared_bytes(2), 23008u); // the perf gate's smem
+}
+
+TEST(SharedMemory, UpToFourBlocksOfQwenFitAnSm) {
+    for (unsigned blocks = 1; blocks <= 4; ++blocks) {
+        EXPECT_TRUE(mk::fits_shared_memory(blocks, qwen_shared_bytes(blocks), kReserved,
+                                           kSharedPerSm))
+            << blocks << " blocks";
+    }
+    EXPECT_FALSE(mk::fits_shared_memory(5, qwen_shared_bytes(5), kReserved, kSharedPerSm));
+}
+
+TEST(SharedMemory, TheDriversReservePerBlockCounts) {
+    // 4 blocks of 25,000 bytes are 100,000 bytes, and 104,096 with the reserve.
+    EXPECT_TRUE(mk::fits_shared_memory(4, 25000, 0, kSharedPerSm));
+    EXPECT_FALSE(mk::fits_shared_memory(4, 25000, kReserved, kSharedPerSm));
+    // 4 * (24,576 + 1,024) is exactly 102,400.
+    EXPECT_TRUE(mk::fits_shared_memory(4, 24576, kReserved, kSharedPerSm));
+    EXPECT_FALSE(mk::fits_shared_memory(4, 24577, kReserved, kSharedPerSm));
+}
+
+// Qwen3-0.6B's weights, its BF16 KV cache, and the RTX 4070 Ti SUPER's device memory.
+constexpr std::uint64_t kWeightBytes   = 1509347488 - 5951648; // file_size - data_start
+constexpr std::uint64_t kKvBytesPerPos = 2 * 28 * kKvPerPos * 2; // K and V, 28 layers, BF16
+constexpr std::uint64_t kDeviceMemory  = 16764764160;
+
+TEST(DeviceMemory, QwenFitsUpTo133068Positions) {
+    EXPECT_TRUE(mk::fits_device_memory(kWeightBytes, kKvBytesPerPos, 4096, kDeviceMemory));
+    EXPECT_TRUE(mk::fits_device_memory(kWeightBytes, kKvBytesPerPos, 65536, kDeviceMemory));
+    // 1,503,395,840 + 133,068 * 114,688 is below 16,764,764,160, one more position is above.
+    EXPECT_TRUE(mk::fits_device_memory(kWeightBytes, kKvBytesPerPos, 133068, kDeviceMemory));
+    EXPECT_FALSE(mk::fits_device_memory(kWeightBytes, kKvBytesPerPos, 133069, kDeviceMemory));
+    EXPECT_FALSE(mk::fits_device_memory(kWeightBytes, kKvBytesPerPos, 1u << 20, kDeviceMemory));
+}
+
+TEST(DeviceMemory, WeightsLargerThanTheDeviceFailWithoutACache) {
+    EXPECT_TRUE(mk::fits_device_memory(kDeviceMemory, kKvBytesPerPos, 0, kDeviceMemory));
+    EXPECT_FALSE(mk::fits_device_memory(kDeviceMemory + 1, kKvBytesPerPos, 0, kDeviceMemory));
+}
+
+TEST(DeviceMemory, ACacheWhoseSizeWrapsIn64BitsFails) {
+    // 2^62 positions of 4 bytes are 2^64 bytes, which a product would wrap to 0.
+    EXPECT_FALSE(mk::fits_device_memory(0, 4, std::uint64_t{1} << 62, kDeviceMemory));
+}
+
+TEST(ContextLength, NCtxMayReachTheModelsContextLengthButNotPassIt) {
+    EXPECT_TRUE(mk::within_context_length(4096, 32768));
+    EXPECT_TRUE(mk::within_context_length(32768, 32768));
+    EXPECT_FALSE(mk::within_context_length(32769, 32768));
+    EXPECT_FALSE(mk::within_context_length(65536, 32768));
 }
 
 // Phases that declare only what they read and write.

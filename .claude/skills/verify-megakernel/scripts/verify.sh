@@ -138,6 +138,7 @@ gate) # gate: the megakernel's size on sm_89 and its speed, for the engine that 
     sass() { "$cuda/cuobjdump" -sass "$@" | awk '/Function :/ { k = /megakernel/ } k && /^ +\/\*[0-9a-f]{4,}\*\/ +[^ \/].*;/'; }
     # ptxas reruns on the PTX the build embedded; equal SASS below proves it is the build's compile.
     (cd "$g" && "$cuda/cuobjdump" -xptx all "$obj" >/dev/null)
+    compgen -G "$g/*.sm_89.ptx" >/dev/null || { echo "FAIL no sm_89 code in $obj: the gate measures an MK_GPU=Rtx4070TiSuper build"; exit 1; }
     "$cuda/ptxas" -arch=sm_89 -v "$g"/*.sm_89.ptx -o "$g/k.cubin" >"$EVIDENCE/gate.ptxas.log" 2>&1
     sass -arch sm_89 "$obj" >"$EVIDENCE/gate.sm_89.sass"
     sass "$g/k.cubin" | cmp -s - "$EVIDENCE/gate.sm_89.sass" || { echo "FAIL ptxas rerun differs from the build's SASS"; exit 1; }

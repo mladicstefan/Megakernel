@@ -46,7 +46,8 @@ these H2s, in order: `Sub-features`, `How to get to it (user POV)`,
 - [Untrusted input](./untrusted-input.md): hostile strings are escaped byte-exactly;
   invalid keys and non-finite values are rejected.
 - [Build integration](./build-integration.md): `MODEL_GGUF` generates `model.hpp`, the
-  engine builds, and edits rerun the right steps.
+  engine builds, edits rerun the right steps, and `MK_GPU` picks the one CUDA
+  architecture.
 - [Reference dumps](./reference-dumps.md): llama.cpp's per-layer tensors and logits for a
   committed prompt, reproducible checksums, and greedy agreement with `llama-simple`.
 - [Weights upload](./weights-upload.md): the engine verifies its GGUF, uploads the tensor
@@ -54,6 +55,7 @@ these H2s, in order: `Sub-features`, `How to get to it (user POV)`,
 - [Forward pass](./forward-pass.md): the reference CUDA forward pass decodes token IDs,
   matches llama.cpp's greedy tokens, and is compared with its dump tensor by tensor.
 - [Megakernel](./megakernel.md): one kernel launch per decode step, checked phase by phase
-  against the reference pass, with its tokens per second.
+  against the reference pass, with its tokens per second, and a build that fails when the
+  GPU cannot hold it.
 - [Perf gate](./perf-gate.md): the megakernel's registers, spills, shared memory, SASS
   count and ms per step, with the baseline and the limits a change stays inside.

@@ -35,6 +35,15 @@ static_assert(kHeadDim % 32 == 0);
 template <MegakernelConfig C>
 constexpr unsigned kMembers = Grid<C>::blocks / kKvHeads;
 
+// The kernel's static shared memory, from the constants that size its __shared__ buffers.
+template <MegakernelConfig C>
+constexpr std::uint64_t kSharedBytes =
+    megakernel_shared_bytes(kWidest, Grid<C>::warps_per_block, kGroup, kHeadDim, kMembers<C>);
+
+// The KV cache of one position: a K and a V for every layer, in the cache's format.
+template <MegakernelConfig C>
+constexpr std::uint64_t kKvBytesPerPos = 2 * n_layer * kKvPerPos * sizeof(typename C::Kv::Bits);
+
 // Where each tensor starts, as constants in the kernel.
 struct LayerOffsets {
     std::uint64_t attn_norm, q, k, v, q_norm, k_norm, o, ffn_norm, gate, up, down;
@@ -497,7 +506,7 @@ __device__ void run_layer(const Step<C>& s, MegaSync<C>* sync, unsigned& arrived
 // One decode step. out is the trace the phases write, in the trace they read: the same one
 // in a normal step. The launch bounds make the compiler fit the grid's blocks on one SM.
 template <MegakernelConfig C>
-__global__ void __launch_bounds__(C::threads, C::blocks_per_sm)
+__global__ void __launch_bounds__(C::threads, C::Gpu::blocks_per_sm)
 megakernel(Weights weights, Trace* out, const Trace* in, typename C::Kv::Bits* k_cache,
            typename C::Kv::Bits* v_cache, const float* rope, AttnPartial* partials,
            MegaSync<C>* sync, unsigned token, unsigned pos, unsigned epoch) {
@@ -528,6 +537,19 @@ megakernel(Weights weights, Trace* out, const Trace* in, typename C::Kv::Bits* k
     // A matrix starts on general.alignment, and its rows are whole steps apart.
     static_assert(model::alignment % C::RowKernel::alignment == 0,
                   "general.alignment is not a multiple of the row kernel's alignment");
+    // What the GPU must hold.
+    static_assert(fits_shared_memory(C::Gpu::blocks_per_sm, kSharedBytes<C>,
+                                     C::Gpu::shared_reserved_per_block, C::Gpu::shared_per_sm),
+                  "blocks_per_sm blocks of the megakernel's static shared memory do not fit in "
+                  "the shared memory of one SM: lower the GPU type's blocks_per_sm");
+    // shortcut: counts the weights and the KV cache only, not the traces, the RoPE table or
+    // what the driver and other processes hold; count them when a build comes within 1 GB.
+    static_assert(fits_device_memory(weights_size, kKvBytesPerPos<C>, C::n_ctx,
+                                     C::Gpu::device_memory),
+                  "the weights and a KV cache of n_ctx positions do not fit in the GPU's device "
+                  "memory: lower n_ctx");
+    static_assert(within_context_length(C::n_ctx, arch::context_length),
+                  "n_ctx is more positions than the model's context_length: lower n_ctx");
     constexpr unsigned kBlocks        = Grid<C>::blocks;
     constexpr unsigned kThreads       = Grid<C>::threads;
     constexpr unsigned kWarpsPerBlock = Grid<C>::warps_per_block;
@@ -646,8 +668,16 @@ std::variant<Megakernel<C>, CudaError> Megakernel<C>::make() {
     int resident = 0;
     MK_TRY(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&resident, megakernel<C>,
                                                          static_cast<int>(C::threads), 0));
-    if (resident < static_cast<int>(C::blocks_per_sm)) {
+    if (resident < static_cast<int>(C::Gpu::blocks_per_sm)) {
         return CudaError{"megakernel", "the GPU cannot keep the whole grid resident"};
+    }
+    // The shared memory proof counts the buffers with megakernel_shared_bytes. A buffer that
+    // count misses would make the proof pass a grid that does not fit.
+    cudaFuncAttributes kernel{};
+    MK_TRY(cudaFuncGetAttributes(&kernel, megakernel<C>));
+    if (kernel.sharedSizeBytes != kSharedBytes<C>) {
+        return CudaError{"megakernel", "its static shared memory is not what "
+                                       "megakernel_shared_bytes in schedule.hpp counts"};
     }
     Megakernel m;
     MK_TRY(device_new(m.sync, 1));
