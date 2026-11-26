@@ -29,8 +29,9 @@ engine prints how many of them match.
   [model.gguf] [--tokens <tokens.txt> [--generate <n>]]` and exits 2.
 - `weights-gpu`: on a GPU whose SM count is not the one the build targets (`mk::BuildGpu`,
   66 for the RTX 4070 Ti SUPER), the engine exits 1 with `built for the RTX 4070 Ti SUPER
-  (66 SMs), this GPU has <n> SMs` before it uploads anything. This cannot be driven on the
-  development machine, which has only that GPU.
+  (66 SMs), this GPU has <n> SMs` before it uploads anything. On the development machine,
+  which has only that GPU, drive it with a `-DMK_GPU=Rtx5070` build: `built for the RTX
+  5070 (48 SMs), this GPU has 66 SMs`.
 - `weights-negative-control`: `weights_test` uploads the file's bytes starting 32 bytes
   early, and no tensor's device checksum matches the file's.
 - `weights-memcheck`: `compute-sanitizer --tool memcheck` on the engine reports 0 errors.

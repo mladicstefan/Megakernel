@@ -3,10 +3,10 @@
 
 #include <cstdint>
 
-// The megakernel's schedule and the proofs that it fits a model and a grid. Each proof is a
-// constexpr function over plain numbers or over phase types, so a host test can feed it
-// failing input, and the megakernel asserts each one with its own message. No model, no GPU
-// and no CUDA header. nvcc compiles this header: C++20 only.
+// The megakernel's schedule and the proofs that it fits a model, a grid and a GPU. Each
+// proof is a constexpr function over plain numbers or over phase types, so a host test can
+// feed it failing input, and the megakernel asserts each one with its own message. No model,
+// no GPU type and no CUDA header. nvcc compiles this header: C++20 only.
 //
 // A proof the kernel asserts is MK_HOST_DEVICE: nvcc refuses a call to a host function in
 // device code, even inside a static_assert.
@@ -59,6 +59,46 @@ MK_HOST_DEVICE constexpr bool each_kv_head_has_a_block(unsigned blocks, unsigned
 MK_HOST_DEVICE constexpr bool one_thread_per_group_dimension(unsigned threads, unsigned group,
                                                              unsigned head_dim) {
     return threads == group * head_dim;
+}
+
+// The megakernel's static shared memory in bytes, from the numbers that size its buffers,
+// all of 4-byte values: xs and scratch; attention_part's q, k, v and its warps' max, sum and
+// acc; attention_merge's max and sum of each member; the logits' best of each warp.
+// Megakernel::make refuses a kernel whose shared memory is not this count.
+MK_HOST_DEVICE constexpr std::uint64_t megakernel_shared_bytes(unsigned widest,
+                                                               unsigned warps_per_block,
+                                                               unsigned group, unsigned head_dim,
+                                                               unsigned members) {
+    const std::uint64_t warps  = warps_per_block;
+    const std::uint64_t values = widest + warps + std::uint64_t{group + 2} * head_dim +
+                                 warps * group * (2 + std::uint64_t{head_dim}) +
+                                 2 * std::uint64_t{group} * members + 2 * warps;
+    return 4 * values;
+}
+
+// Whether blocks_per_sm blocks of block_bytes static shared memory each are resident on one
+// SM at once, with the driver keeping reserved_per_block of shared_per_sm for each.
+MK_HOST_DEVICE constexpr bool fits_shared_memory(unsigned blocks_per_sm,
+                                                 std::uint64_t block_bytes,
+                                                 unsigned reserved_per_block,
+                                                 unsigned shared_per_sm) {
+    return blocks_per_sm * (block_bytes + reserved_per_block) <= shared_per_sm;
+}
+
+// Whether the weights and a KV cache of n_ctx positions fit in device_memory. It divides, so
+// no product can wrap.
+MK_HOST_DEVICE constexpr bool fits_device_memory(std::uint64_t weight_bytes,
+                                                 std::uint64_t kv_bytes_per_position,
+                                                 std::uint64_t n_ctx,
+                                                 std::uint64_t device_memory) {
+    return weight_bytes <= device_memory &&
+           n_ctx <= (device_memory - weight_bytes) / kv_bytes_per_position;
+}
+
+// Whether the KV cache holds no more positions than the model's context length.
+MK_HOST_DEVICE constexpr bool within_context_length(std::uint64_t n_ctx,
+                                                    std::uint64_t context_length) {
+    return n_ctx <= context_length;
 }
 
 // The buffers of a layer that its phases pass to each other, one bit each.

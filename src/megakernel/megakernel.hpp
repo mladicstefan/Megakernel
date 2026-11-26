@@ -22,7 +22,7 @@ struct MegaSync {
 };
 
 // The megakernel for configuration C. Its grid is Grid<C>: every SM of C::Gpu runs
-// C::blocks_per_sm blocks, all resident at once, which the barriers rely on. It decodes
+// C::Gpu::blocks_per_sm blocks, all resident at once, which the barriers rely on. It decodes
 // into a Decoder<C>, which owns the KV cache and the trace, and writes the tensors it
 // materializes into that trace: embd, Qcur, Kcur, Vcur, kqv_out, ffn_inp, ffn_swiglu, l_out
 // and result_output. The other fields of the trace are fused away and stay untouched.
@@ -33,7 +33,8 @@ struct Megakernel {
     std::uint32_t                          epoch = 0; // what `arrived` was before the next launch
     std::unique_ptr<Trace, CudaFree>       operands;  // for decode_from; null until it is used
 
-    // Fails if the device cannot hold the whole grid at once.
+    // Fails if the device cannot hold the whole grid at once, or if the kernel's shared
+    // memory is not what the capacity proof counted.
     static std::variant<Megakernel, CudaError> make();
 
     // Runs token at position d.n_past, which must be below C::n_ctx, and returns the most

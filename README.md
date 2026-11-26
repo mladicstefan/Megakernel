@@ -2,7 +2,8 @@
 
 An LLM inference engine compiled for one model and one GPU. Everything the model or the
 build fixes becomes a constant or a type before the program runs: tensor offsets, shapes,
-the KV cache format, the GPU's SM count, and the order in which the GPU does its work.
+the KV cache format, the GPU's SM count, architecture and memory, and the order in which
+the GPU does its work.
 
 First target: decode at batch size 1 of Qwen3-0.6B (BF16) on an RTX 4070 Ti SUPER, checked
 against llama.cpp.
@@ -36,6 +37,10 @@ build/engine --tokens tests/data/reference/planets/tokens.txt --generate 32
 ```
 
 The engine takes and prints token IDs. It has no tokenizer yet.
+
+The build is for the RTX 4070 Ti SUPER and compiles CUDA for its architecture alone.
+`-DMK_GPU=Rtx5070` builds for the RTX 5070 instead. Another Nvidia GPU is a type in
+`src/config/gpu.hpp`, a line in `CMakeLists.txt` and a recompile.
 
 ## How it works
 
@@ -75,11 +80,13 @@ themselves, and each has a small interface that the compiler checks.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/config-dark.svg">
-  <img src="docs/img/config.svg" alt="EngineConfig has six members; three are types checked by a concept, and the grid is derived from the GPU's SM count.">
+  <img src="docs/img/config.svg" alt="EngineConfig has five members; three are types checked by a concept, and the grid is derived from the GPU type's SM count and blocks per SM.">
 </picture>
 
 To swap a component, name another type in the struct. A grid that cannot run the model
-fails a `static_assert` when the kernel is compiled.
+fails a `static_assert` when the kernel is compiled. So do blocks whose shared memory does
+not fit on an SM, a KV cache that does not fit in the GPU's memory or is longer than the
+model's context, and device code compiled for another architecture than the GPU type's.
 
 ### 4. The megakernel runs a whole step in one launch
 
@@ -151,7 +158,7 @@ The output matrix already runs at the memory limit. The layers are 11% above it.
 | Item | State |
 |---|---|
 | Another model architecture | The forward pass is written for the qwen3 graph only. |
-| Another GPU | A GPU is one type. A 48-SM type compiles. It has not been run. |
+| Another GPU | A GPU is one type, named with `-DMK_GPU`. `Rtx5070` compiles for sm_120. It has not been run, and its capacity comes from the specification. |
 | KV cache below 16 bits | Would be a new format type. None exists. |
 | One launch for many tokens | Still one launch per token. |
 | Text in, text out | No tokenizer yet. |

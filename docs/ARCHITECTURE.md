@@ -56,8 +56,8 @@ Each fact gets one owner.
 | `model.hpp` (generated) | The file's numbers: every tensor and every metadata value. | |
 | `Matrix<S>`, `Vector<S>` | A tensor handle whose type is its shape and dtype and whose value is its offset. A kernel reads rows, columns and format from the type. The 28 layers share one instantiation. | P2 |
 | `arch::qwen3` | What the numbers mean: a `DecoderShape` read from `model.hpp`, and two policy types, `QkNorm` and `Rope`. About 20 lines. | P1, P3 |
-| `Rtx4070TiSuper`, `Rtx5070` | The hardware: SM count, CUDA architecture, memory, shared memory per SM. | P1 |
-| `EngineConfig<Arch, Gpu>` | One of each, plus the KV format, the context length, `blocks_per_sm` and the row kernel. `threads` is derived from the model, not chosen. | P7 |
+| `Rtx4070TiSuper`, `Rtx5070` | The hardware: SM count, CUDA architecture, memory, shared memory per SM, and the megakernel's `blocks_per_sm`, a measurement on that hardware. | P1 |
+| `EngineConfig<Arch, Gpu>` | One of each, plus the KV format, the context length and the row kernel. `threads` is derived from the model, not chosen. | P7 |
 | `schedule.hpp` | Every proof, as functions over plain numbers with one named assertion per fact: the row split, the attention split, the phase order, the barrier count, shared memory, device memory. | P5 |
 | `VerifiedDevice<G>` | The device check, made once, as a type the megakernel requires. | P6 |
 
@@ -68,8 +68,9 @@ over a tensor's offset or over the layer index.
 What adding things then costs:
 
 - **A second size of the same architecture:** another `MODEL_GGUF`. No code.
-- **The RTX 5070:** a five-line type and `-DMK_GPU=Rtx5070`. The build compiles for that
-  GPU's CUDA architecture only, and a `static_assert` on `__CUDA_ARCH__` rejects a mismatch.
+- **The RTX 5070:** a type in `gpu.hpp`, one line in CMake's table and
+  `-DMK_GPU=Rtx5070`. The build compiles for that GPU's CUDA architecture only, and a
+  `static_assert` on `__CUDA_ARCH__` rejects a mismatch.
 - **A Llama-style decoder:** one architecture header and one overload per policy.
 - **Another weight dtype:** one format type and one row kernel.
 
@@ -87,7 +88,7 @@ runs of `forward --megakernel --generate 128`.
 | 0 | **Done.** The gate as a script in the verify skill, with today's numbers: `verify.sh gate`. | every later "same speed" claim |
 | 1 | **Done.** Fix the bugs that give wrong output: the attention merge loads every member's partial, the shared buffer is sized by the widest vector, the row kernel's alignment is asserted, and `--generate` is range-checked. The repros are the verify skill's "Other shapes" recipe and three tests. | correctness on other shapes |
 | 2 | **Done.** The proofs live in `src/megakernel/schedule.hpp`, and `megakernel.cu` asserts each fact with its own message. `tests/megakernel/schedule_test.cpp` feeds every proof failing numbers. | P5 |
-| 3 | The GPU type carries its CUDA architecture and its capacity. `MK_GPU` picks it, the build compiles one architecture, and capacity is asserted. `Rtx5070` as a compile-only target. | the hardware axis |
+| 3 | **Done.** The GPU type carries its CUDA architecture, its capacity and the megakernel's measured `blocks_per_sm`. `MK_GPU` picks it, the build compiles one architecture, a `static_assert` on `__CUDA_ARCH__` rejects another, and `schedule.hpp` proves shared memory, device memory and the context length. `Rtx5070` is a compile-only target. | the hardware axis |
 | 4 | `VerifiedDevice<G>` replaces the two copies of the SM check. | P6 |
 | 5 | Typed tensor handles replace the offset tables and the dtype casts. | P2 |
 | 6 | `arch::qwen3` and `EngineConfig<Arch, Gpu>`. The globals in `forward.hpp` go, `threads` is derived, and CMake parses the architecture from the GGUF's bytes exactly. | a second size of the same architecture |

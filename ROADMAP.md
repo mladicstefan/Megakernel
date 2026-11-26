@@ -118,7 +118,8 @@ tokens/s are measured, and a prompt of the full context length runs without erro
 
 ### 3. A second GPU and a second model, by recompiling
 
-- the RTX 5070 (48 SMs, sm_120) as a second GPU type
+- the RTX 5070 (48 SMs, sm_120) as a second GPU type (the type exists and
+  `-DMK_GPU=Rtx5070` compiles; it has not run, and its capacity is not measured)
 - a second Qwen3 size, and one quantized format
 
 Done when each needs only a different `model.hpp` and configuration type, with no edit to

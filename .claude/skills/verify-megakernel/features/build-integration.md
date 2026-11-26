@@ -19,6 +19,11 @@ exactly the steps they affect.
   generation or recompiling `weights.cu`.
 - `build-weights-only`: touching `src/weights/weights.cu` recompiles it and relinks the
   engine without recompiling `main.cpp`.
+- `build-gpu`: configuring prints `MK_GPU: Rtx4070TiSuper, CUDA architectures: 89`, and
+  every `.cu` file compiles for that architecture alone. `-DMK_GPU=Rtx5070` prints `120`.
+  An unknown `MK_GPU` stops the configure with `MK_GPU=<name> is not a GPU this build
+  knows`. A `CMAKE_CUDA_ARCHITECTURES` other than the GPU type's fails to compile with
+  `nvcc compiles device code for another CUDA architecture than MK_GPU's cuda_arch`.
 
 ## How to get to it (user POV)
 
@@ -53,6 +58,12 @@ Preconditions:
 - **Weights changed.** Run `touch src/weights/weights.cu`, then the same build. Expect
   `Building ... weights.cu.o`, `Linking ... libweights.a` and `Linking ... engine`, with no
   `Generating` line and no `main.cpp.o` line.
+- **GPU.** After `engine`, run
+  `grep MK_GPU build/verify-evidence/<id>/engine.configure.log` and
+  `grep -o -- '--generate-code=[^ "]*' $S/engine-build/compile_commands.json | sort | uniq -c`.
+  Expect the 89 line and one `compute_89,code=[compute_89,sm_89]` entry per `.cu` file.
+  Configure a second directory by hand with `-DCMAKE_CUDA_ARCHITECTURES=120`, or with
+  `-DMK_GPU=Rtx9999`, and expect the messages above.
 - **Proof.** `engine.build.log`, `engine.stdout`, and the build lines from each touch step.
 
 ## Gotchas

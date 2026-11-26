@@ -23,7 +23,12 @@ difference per tensor and exits 1 when a limit is exceeded.
 - `mega-sanitizers`: `compute-sanitizer` with `memcheck`, `racecheck` and `synccheck`
   reports 0 errors and 0 hazards.
 - `mega-gpu`: on a GPU with another SM count than the build's, it exits 1 with `built for
-  the RTX 4070 Ti SUPER (66 SMs), this GPU has <n> SMs`.
+  the <name> (<n> SMs), this GPU has <m> SMs`. A `-DMK_GPU=Rtx5070` build drives it on the
+  development machine: `built for the RTX 5070 (48 SMs), this GPU has 66 SMs`.
+- `mega-capacity`: a configuration the GPU cannot hold fails to build, one message per
+  fact: blocks per SM whose shared memory does not fit on an SM, a KV cache that does not
+  fit in device memory next to the weights, and an `n_ctx` past the model's
+  `context_length`.
 
 ## How to get to it (user POV)
 
@@ -100,6 +105,20 @@ Preconditions:
     "attention needs one thread per dimension of each query head of a group: set threads
     to n_head / n_head_kv * head_dim"`, and no other error. `heads / kv_heads * head_dim`
     is 128, and the grid has 256 threads.
+- **Capacity.** In a scratch copy (`git archive HEAD | tar -x -C $S/cap`), make one edit,
+  then configure it for Qwen and build `engine`:
+  - `blocks_per_sm = 5` in `Rtx4070TiSuper` (`src/config/gpu.hpp`): `static assertion
+    failed with "blocks_per_sm blocks of the megakernel's static shared memory do not fit
+    in the shared memory of one SM: lower the GPU type's blocks_per_sm"`. Five blocks of
+    23,408 bytes plus 1,024 reserved each are 122,160, above 102,400.
+  - `n_ctx = 65536` in `EngineConfig`: `"n_ctx is more positions than the model's
+    context_length: lower n_ctx"`. Qwen's `context_length` is 32,768.
+  - `n_ctx = 1u << 20`: that message and `"the weights and a KV cache of n_ctx positions do
+    not fit in the GPU's device memory: lower n_ctx"`. The cache alone would be 120 GB.
+  Measured on 2026-11-26. `schedule_test` feeds each proof failing numbers.
+- **GPU.** Configure with `-DMK_GPU=Rtx5070` and build `engine` and `forward`. Both exit 1
+  on this machine with `built for the RTX 5070 (48 SMs), this GPU has 66 SMs`, after the
+  `file:` line and before the upload.
 - **Proof.** The `.stdout` files and the three sanitizer logs.
 
 ## Gotchas
@@ -122,10 +141,13 @@ Preconditions:
   their way into the cache. A sum in another order can move a value across a rounding
   boundary, which changes one cache entry by one BF16 step. With an F32 cache
   (`EngineConfig::Kv = KvF32`, in a scratch copy) `kqv_out` is at 3.7e-6.
-- The grid is 132 blocks of 256 threads (`EngineConfig::blocks_per_sm` is 2, on 66 SMs),
-  and every barrier waits for all of them.
-  `Megakernel::make` fails with `the GPU cannot keep the whole grid resident` if the
-  device cannot run that many blocks per SM at once: 5 or more do not fit on this GPU. A barrier that waits about a second gives up,
-  and the step fails with `a barrier gave up waiting for the rest of the grid`.
+- The grid is 132 blocks of 256 threads (`Rtx4070TiSuper::blocks_per_sm` is 2, on 66 SMs),
+  and every barrier waits for all of them. 5 or more blocks per SM fail to build: their
+  shared memory does not fit in an SM (see Capacity). `Megakernel::make` still fails with
+  `the GPU cannot keep the whole grid resident` if the device cannot run that many blocks
+  per SM at once, and with `its static shared memory is not what megakernel_shared_bytes in
+  schedule.hpp counts` if a `__shared__` buffer was added without counting it. A barrier
+  that waits about a second gives up, and the step fails with `a barrier gave up waiting
+  for the rest of the grid`.
 - `--megakernel` and `--compare` cannot be combined. Compare the megakernel with the
   reference pass, and the reference pass with llama.cpp.
