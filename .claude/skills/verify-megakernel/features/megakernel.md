@@ -81,7 +81,9 @@ Preconditions:
   compare the `generated:` line of `RUN_ID=<id> $V run-engine decode --tokens
   $S/craft/m.gguf.tokens.txt --generate <n>` with that of `$F --generate <n>
   $S/craft/m.gguf.tokens.txt`, the reference pass. The grid needs `heads / kv_heads *
-  head_dim` to be 256 and every width to be a multiple of 256. Measured on 2026-11-26:
+  head_dim` to be 256 and every width to be a multiple of 256. Each fact the grid relies on
+  is its own `static_assert` in `megakernel.cu`, over a proof in `schedule.hpp`, so a shape
+  that breaks one fails to build with that fact's message. Measured on 2026-11-26:
   - `512 1536 4 2 128 2 1024`: within tolerance with `--generate 700`, and the same 700
     tokens.
   - `512 1536 8 2 64 2 1024`: within tolerance with `--generate 700` (`kqv_out` rel L2
@@ -94,6 +96,10 @@ Preconditions:
     assertion failed with "general.alignment is not a multiple of the row kernel's
     alignment"`. The row kernel loads 16-byte words, and every matrix starts 8 bytes past
     a multiple of 16.
+  - `512 1536 4 2 64 2 1024`: `engine` fails to build with `static assertion failed with
+    "attention needs one thread per dimension of each query head of a group: set threads
+    to n_head / n_head_kv * head_dim"`, and no other error. `heads / kv_heads * head_dim`
+    is 128, and the grid has 256 threads.
 - **Proof.** The `.stdout` files and the three sanitizer logs.
 
 ## Gotchas

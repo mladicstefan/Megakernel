@@ -149,10 +149,11 @@ add_executable(smoke_test tests/smoke_test.cpp)
 target_link_libraries(smoke_test PRIVATE GTest::gtest_main project_warnings)
 gtest_discover_tests(smoke_test)
 
-# The engine's host-only code: the checksum, BF16, the comparison metrics and the position
-# count. No GPU and no model.
+# The engine's host-only code: the checksum, BF16, the comparison metrics, the position
+# count and the megakernel's schedule proofs. No GPU and no model.
 add_executable(host_test tests/weights/checksum_test.cpp tests/base/numeric_test.cpp
-  tests/reference/compare_test.cpp tests/decode/positions_test.cpp)
+  tests/reference/compare_test.cpp tests/decode/positions_test.cpp
+  tests/megakernel/schedule_test.cpp)
 target_include_directories(host_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(host_test PRIVATE GTest::gtest_main project_warnings)
 gtest_discover_tests(host_test)

@@ -27,7 +27,9 @@ Components live in directories under `src/`, executables under `apps/`, and test
   (row kernels as types).
 - `src/weights/`: `weights.{hpp,cu}` (the weights on the GPU), `verified_file.hpp`,
   `checksum.hpp`.
-- `src/megakernel/`: `megakernel.{hpp,cu}` (one kernel launch per decode step, qwen3 only).
+- `src/megakernel/`: `megakernel.{hpp,cu}` (one kernel launch per decode step, qwen3 only),
+  `schedule.hpp` (the row split, the phase list and every proof the kernel asserts, as
+  constexpr functions that need no model and no GPU).
 - `src/reference/`: `forward.{hpp,cu}` (the reference forward pass the megakernel is
   checked against), `compare.hpp`.
 - `src/decode/`: `greedy.hpp` (token IDs in, token IDs out), `positions.hpp`.
@@ -38,7 +40,8 @@ Components live in directories under `src/`, executables under `apps/`, and test
 - `tools/reference/`: the llama.cpp harness that makes the dumps (its own CMake project).
 - `tests/`: `gguf/reader_test.cpp` and `gguf/emitter_test.cpp` (one gtest binary,
   `reader_test`); `weights/checksum_test.cpp`, `base/numeric_test.cpp`,
-  `reference/compare_test.cpp` and `decode/positions_test.cpp` (one binary, `host_test`);
+  `reference/compare_test.cpp`, `decode/positions_test.cpp` and
+  `megakernel/schedule_test.cpp` (one binary, `host_test`);
   `weights/weights_test.cpp` (needs `MODEL_GGUF` and a GPU); `smoke_test.cpp`.
 - `tests/data/`: `toy.gguf` (384 bytes, the main fixture), `make_test_gguf.py`, and a uv
   venv with gguf-py (`tests/data/.venv/bin/python -I`).
