@@ -12,6 +12,9 @@
 // checksum_term. nvcc compiles this header: C++20 only.
 
 namespace mk {
+// The checksum mixes and adds one aligned 8-byte word at a time.
+inline constexpr std::size_t checksum_word_bytes = sizeof(std::uint64_t);
+
 // What the 8-byte word at position index adds to a checksum. The position goes through the
 // mixer (splitmix64's finalizer) with the word, so moved or swapped words change the sum.
 // A checksum is the plain sum of its terms, so threads may add them in any order.
@@ -26,11 +29,12 @@ MK_HOST_DEVICE constexpr std::uint64_t checksum_term(std::uint64_t word, std::ui
 // The host side. data is a whole number of 8-byte words; weights.hpp asserts that of every
 // tensor.
 inline std::uint64_t checksum(std::span<const std::byte> data) {
-    assert(data.size() % 8 == 0);
+    assert(data.size() % checksum_word_bytes == 0);
     std::uint64_t sum = 0;
-    for (std::size_t i = 0; i < data.size() / 8; ++i) {
+    for (std::size_t i = 0; i < data.size() / checksum_word_bytes; ++i) {
         std::uint64_t word;
-        std::memcpy(&word, data.data() + 8 * i, 8); // data may be unaligned
+        // data may be unaligned
+        std::memcpy(&word, data.data() + checksum_word_bytes * i, sizeof word);
         sum += checksum_term(word, i);
     }
     return sum;

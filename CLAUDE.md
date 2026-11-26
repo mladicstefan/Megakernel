@@ -28,7 +28,9 @@ Components live in directories under `src/`, executables under `apps/`, and test
   decoder needs from a model), `gpu_catalogue.hpp` (GPUs as types: who each is, what it holds, the
   megakernel's measured blocks per SM; the rule that matches a driver's name to one),
   `gpu.hpp` (`BuildGpu`, the one this build is for), `kv_format.hpp` (KV cache formats as types),
-  `row_kernel.hpp` (row kernels as types).
+  `row_kernel.hpp` (row kernels as types), `checksum_kernel.hpp` (the weights' checksum
+  kernel's launch as a type), `platform.hpp` (what holds on every Nvidia GPU: the warp
+  size, the full-warp mask, the static shared memory limit).
 - `src/arch/`: one model type per architecture, every member read from `model.hpp`:
   `qwen3.hpp` (`Qwen3`).
 - `src/weights/`: `weights.{hpp,cu}` (the weights on the GPU), `verified_file.hpp`,
@@ -38,7 +40,8 @@ Components live in directories under `src/`, executables under `apps/`, and test
   constexpr functions that need no model and no GPU).
 - `src/reference/`: `forward.{hpp,cu}` (the reference forward pass the megakernel is
   checked against), `compare.hpp`.
-- `src/decode/`: `greedy.hpp` (token IDs in, token IDs out), `positions.hpp`.
+- `src/decode/`: `greedy.hpp` (token IDs in, token IDs out), `positions.hpp` (the position
+  count, and `default_generate`, the apps' default for `--generate`).
 - `apps/engine/main.cpp`: the engine. `apps/gguf2hpp/main.cpp`: the `gguf2hpp` CLI.
   `apps/forward/main.cpp`: the `forward` CLI, which decodes token IDs with the megakernel
   or the reference pass, checks the first against the second, and the second against a
@@ -84,6 +87,9 @@ cmake -S . -B build && cmake --build build -j && ctest --test-dir build
   `CMAKE_CUDA_ARCHITECTURES`. No device is a configure error that names `-DMK_GPU=<type>`.
   Another GPU in the catalogue is a type in `gpu_catalogue.hpp` and a line in its
   `MK_GPU_CATALOGUE`.
+- **Context cap:** `-DMK_N_CTX=<n>` (default 4096) is the most positions the KV cache holds,
+  and `EngineConfig::n_ctx` is the smaller of it and the model's `context_length`. A value
+  that is not a positive integer below 2^32 stops the configure with one message.
 - **Sanitizers:** use a separate build directory with `-DENABLE_SANITIZERS=ON` (ASan and
   UBSan, host code only; use `compute-sanitizer` for kernels).
 - **Offline configure of a new build directory:** reuse the fetched sources with
@@ -106,6 +112,10 @@ cmake -S . -B build && cmake --build build -j && ctest --test-dir build
   never a run-time value or a flag. Add it to a configuration type in
   `src/config/config.hpp`, give its interface a concept, and prove what can be proven with a
   `static_assert`.
+- No bare number in a kernel. Each has one owner: derived from the model or the GPU, a
+  platform constant in `src/config/platform.hpp`, a named member of a configuration type
+  with a comment that says what it is (and what was measured), or a definition that stays
+  (a hash constant, BF16's bit layout).
 - Structs with public fields and member functions. No virtual, no inheritance for
   polymorphism, no exceptions (use `std::expected`), no `std::function` or `shared_ptr`.
   Templates and concepts where they earn it.

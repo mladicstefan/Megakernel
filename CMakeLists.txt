@@ -85,6 +85,17 @@ if(ENABLE_SANITIZERS)
   add_link_options(-fsanitize=address,undefined)
 endif()
 
+# The positions the KV cache holds, at most: EngineConfig::n_ctx is the smaller of this and the
+# model's context_length. A positive integer that fits the 32 bits of n_ctx.
+set(MK_N_CTX 4096 CACHE STRING "The most positions the KV cache holds")
+string(LENGTH "${MK_N_CTX}" mk_n_ctx_digits)
+if(NOT MK_N_CTX MATCHES "^[1-9][0-9]*$" OR mk_n_ctx_digits GREATER 10
+   OR MK_N_CTX GREATER 4294967295)
+  message(FATAL_ERROR "MK_N_CTX=${MK_N_CTX} is not a positive integer below 2^32: it is the "
+    "most positions the KV cache holds")
+endif()
+message(STATUS "MK_N_CTX: ${MK_N_CTX}")
+
 # A generated header has no compile command, so clangd guesses one and cannot find
 # model_types.hpp. This tells it where to look when such a header is opened in an editor.
 file(WRITE ${GEN_DIR}/.clangd
@@ -145,6 +156,8 @@ if(MODEL_GGUF)
   target_include_directories(weights PUBLIC ${GEN_DIR} ${CMAKE_SOURCE_DIR}/src)
   # gpu.hpp's BuildGpu: everything that includes it links weights.
   target_compile_definitions(weights PUBLIC MK_GPU=${MK_GPU_TYPE})
+  # config.hpp's EngineConfig::n_ctx.
+  target_compile_definitions(weights PUBLIC MK_N_CTX=${MK_N_CTX})
 
   add_executable(engine apps/engine/main.cpp ${GEN_DIR}/model.hpp)
   # gguf_header: the engine checks its file with the reader's own parse() and hash.
@@ -239,6 +252,7 @@ target_link_libraries(host_test PRIVATE GTest::gtest_main project_warnings)
 # config.hpp names a BuildGpu: model_spec_test derives configurations from test models.
 target_include_directories(host_test PRIVATE ${GEN_DIR})
 target_compile_definitions(host_test PRIVATE MK_GPU=${MK_GPU_TYPE})
+target_compile_definitions(host_test PRIVATE MK_N_CTX=${MK_N_CTX})
 gtest_discover_tests(host_test)
 
 # The device side, on the model the engine is built for. Needs a GPU.

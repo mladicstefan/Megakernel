@@ -1,3 +1,4 @@
+#include "decode/positions.hpp"
 #include "model.hpp"
 #include "weights/verified_device.hpp"
 #include "weights/verified_file.hpp"
@@ -32,7 +33,7 @@ constexpr std::string_view kUsage =
 struct Options {
     const char* model    = MODEL_GGUF; // the file the engine was configured with
     const char* tokens   = nullptr;
-    std::size_t generate = 32;
+    std::size_t generate = mk::default_generate;
 };
 
 std::optional<Options> parse_args(std::span<char*> args) {

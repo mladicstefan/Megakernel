@@ -1,5 +1,6 @@
 #pragma once
 #include "base/host_device.hpp"
+#include "config/platform.hpp"
 
 #include <cstdint>
 
@@ -73,13 +74,13 @@ MK_HOST_DEVICE constexpr std::uint64_t megakernel_shared_bytes(unsigned widest,
     const std::uint64_t values = widest + warps + std::uint64_t{group + 2} * head_dim +
                                  warps * group * (2 + std::uint64_t{head_dim}) +
                                  2 * std::uint64_t{group} * members + 2 * warps;
-    return 4 * values;
+    return sizeof(float) * values;
 }
 
-// Whether a block's static shared memory is within CUDA's 48 KB for __shared__ variables, on
-// every GPU. Only dynamic shared memory, which a kernel opts into, may use more of an SM.
+// Whether a block's static shared memory is within CUDA's limit for __shared__ variables, on
+// every GPU.
 MK_HOST_DEVICE constexpr bool fits_static_shared_memory(std::uint64_t block_bytes) {
-    return block_bytes <= 48 * 1024;
+    return block_bytes <= max_static_shared_bytes;
 }
 
 // Whether blocks_per_sm blocks of block_bytes static shared memory each are resident on one

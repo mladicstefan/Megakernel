@@ -41,6 +41,11 @@ exactly the steps they affect.
   that names `-DMK_GPU=<type>` and lists the catalogue. `CMAKE_CUDA_ARCHITECTURES` is
   ignored; a `-arch` in `CMAKE_CUDA_FLAGS` fails to compile with `nvcc compiles device code
   for another CUDA architecture than MK_GPU's cuda_arch`.
+- `build-n-ctx`: configuring prints `MK_N_CTX: 4096`. `-DMK_N_CTX=1024` builds a
+  `forward` whose `--generate 2000` exits 1 with `2013 positions are more than the 1024
+  this build's KV cache holds`. A value that is not a positive integer below 2^32 (`abc`,
+  `0`, `-5`, `1.5`, `4294967296`) stops the configure with `MK_N_CTX=<value> is not a
+  positive integer below 2^32: it is the most positions the KV cache holds`.
 
 ## How to get to it (user POV)
 
@@ -95,6 +100,9 @@ Preconditions:
   directory, and expect the messages above. In a scratch copy, set `Rtx4070TiSuper::sms` in
   `src/config/gpu_catalogue.hpp` to 64: the configure passes and the build stops with
   `gpu_catalogue.hpp's Rtx4070TiSuper::sms is not the 66 this machine's GPU reports`.
+- **Context cap.** Configure a second directory by hand with `-DMK_N_CTX=1024` and build
+  `forward`: expect `build-n-ctx`'s refusal. Configure with `-DMK_N_CTX=abc` and
+  `-DMK_N_CTX=0` and expect its message.
 - **Proof.** `engine.build.log`, `engine.stdout`, and the build lines from each touch step.
 
 ## Gotchas

@@ -1,5 +1,6 @@
 #pragma once
 #include "base/numeric.hpp"
+#include "config/platform.hpp"
 
 #include <concepts>
 #include <cstdint>
@@ -15,14 +16,14 @@ template <class K>
 concept RowKernel = requires(const std::uint16_t* row, const float* xs) {
     { K::step } -> std::convertible_to<unsigned>;
     { K::alignment } -> std::convertible_to<unsigned>;
-    { K::template dot<256>(row, xs) } -> std::same_as<float>;
+    { K::template dot<K::step>(row, xs) } -> std::same_as<float>;
 };
 
 #ifdef __CUDACC__
 // The sum of v over the warp's lanes. Every lane gets it.
 __device__ inline float warp_sum(float v) {
-    for (unsigned lanes = 16; lanes > 0; lanes /= 2) {
-        v += __shfl_xor_sync(0xffffffffu, v, lanes);
+    for (unsigned lanes = warp_size / 2; lanes > 0; lanes /= 2) {
+        v += __shfl_xor_sync(full_warp_mask, v, lanes);
     }
     return v;
 }
@@ -31,15 +32,18 @@ __device__ inline float warp_sum(float v) {
 // Each lane takes 8 consecutive weights (16 bytes) at a time, so the warp reads 512
 // contiguous bytes per step.
 struct RowDot8 {
-    static constexpr unsigned step      = 256; // weights the warp reads per step
-    static constexpr unsigned alignment = 16;  // bytes: a lane loads its 8 weights as one uint4
+    static constexpr unsigned lane_weights = 8; // a lane loads them as one uint4
+    static constexpr unsigned step         = warp_size * lane_weights; // weights per warp step
+    static constexpr unsigned alignment    = lane_weights * sizeof(std::uint16_t); // bytes
 #ifdef __CUDACC__
     template <unsigned Cols>
     __device__ static float dot(const std::uint16_t* row, const float* xs) {
         static_assert(Cols % step == 0);
+        static_assert(lane_weights == 8 && lane_weights * sizeof(std::uint16_t) == sizeof(uint4),
+                      "the body below is unrolled for the 8 weights of one uint4");
         float sum = 0;
-        for (unsigned c = (threadIdx.x % 32) * 8; c < Cols; c += step) {
-            // Aligned: row starts on 16 bytes, and c is a multiple of 8 weights.
+        for (unsigned c = (threadIdx.x % warp_size) * lane_weights; c < Cols; c += step) {
+            // Aligned: row starts on `alignment` bytes, and c is a multiple of lane_weights.
             const uint4  w = *reinterpret_cast<const uint4*>(row + c);
             const float* x = xs + c;
             sum += bf16_to_float(static_cast<std::uint16_t>(w.x)) * x[0] +

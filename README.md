@@ -43,7 +43,8 @@ the CUDA runtime for device 0, and CUDA compiles for that card's architecture al
 4070 Ti SUPER and the RTX 5070 are types in `src/config/gpu_catalogue.hpp`; any other Nvidia
 card gets a type generated from what the driver reports, with an unmeasured `blocks_per_sm`.
 `-DMK_GPU=Rtx5070` builds for a card that is not in the machine, and `-DMK_GPU=detected`
-forces the generated type.
+forces the generated type. `-DMK_N_CTX=<n>` (default 4096) caps the positions the KV
+cache holds.
 
 The model is a type too. CMake reads the file's `general.architecture` with the project's
 own GGUF reader and names the model type for it, `Qwen3` in `src/arch/qwen3.hpp`. That type
@@ -85,11 +86,14 @@ A wrong file or a wrong GPU stops the engine before any weight is uploaded. With
 One struct names every build choice. It is a template over the model and the GPU, and
 each kernel is a template over it, so a choice is a constant inside the kernel and never a
 flag. Four of the members are types themselves, and each has a small interface that the
-compiler checks. The block size and the context length are derived from the model.
+compiler checks. The block size is derived from the model, the context length is the build's
+`MK_N_CTX` capped by the model's, and the reference pass's block size and the barrier's spin
+limit are named members. What holds on every Nvidia GPU, such as the warp size, is a named
+constant in `src/config/platform.hpp`.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/config-dark.svg">
-  <img src="docs/img/config.svg" alt="EngineConfig&lt;Model, Gpu&gt; has six members; four are types checked by a concept, n_ctx and threads are derived from the model, and the grid from the GPU type's SM count and blocks per SM.">
+  <img src="docs/img/config.svg" alt="EngineConfig&lt;Model, Gpu&gt; has eight members; four are types checked by a concept, n_ctx is MK_N_CTX capped by the model's context length, threads derive from the model, the reference block size and the barrier's spin limit are values, and the grid derives from the GPU type's SM count and blocks per SM.">
 </picture>
 
 To swap a component, name another type in the struct. A grid that cannot run the model
