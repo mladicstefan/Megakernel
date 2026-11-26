@@ -2,6 +2,7 @@
 
 #include "base/cuda_try.hpp"
 #include "base/numeric.hpp"
+#include "megakernel/schedule.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -33,19 +34,6 @@ static_assert(kHeadDim % 32 == 0);
 // kKvHeads - 1 blocks at the end of the grid sit attention out.
 template <MegakernelConfig C>
 constexpr unsigned kMembers = Grid<C>::blocks / kKvHeads;
-
-// What a grid must satisfy to run this model. Checked when the kernel is instantiated.
-template <MegakernelConfig C>
-constexpr bool grid_fits_model =
-    // The row kernel reads whole steps of every matrix it is given.
-    kEmbd % C::RowKernel::step == 0 && kFf % C::RowKernel::step == 0 &&
-    kQ % C::RowKernel::step == 0 &&
-    // Each KV head gets at least one block.
-    Grid<C>::blocks >= kKvHeads &&
-    // The attention merges give one thread to each (query head of the group, dimension).
-    Grid<C>::threads == kGroup * kHeadDim &&
-    // A warp's first row is warp * rows / warps, in 32 bits.
-    std::uint64_t{Grid<C>::warps} * kVocab < (std::uint64_t{1} << 32);
 
 // Where each tensor starts, as constants in the kernel.
 struct LayerOffsets {
@@ -149,37 +137,6 @@ __device__ void load_normed(const float* x, const float* weight, unsigned n, flo
     }
     __syncthreads();
 }
-
-// The schedule of a matrix: the grid's warps split its rows into contiguous runs of equal
-// length, to within one row.
-struct Rows {
-    unsigned begin, end;
-};
-// The rows of a matrix that warp `warp` of `warps` takes.
-MK_HOST_DEVICE constexpr Rows rows_of(unsigned warp, unsigned rows, unsigned warps) {
-    return {warp * rows / warps, (warp + 1) * rows / warps};
-}
-
-// Whether every row of a matrix has exactly one warp: the first run starts at row 0, each
-// run starts where the one before ended, and the last ends at the last row.
-constexpr bool partitions(unsigned rows, unsigned warps) {
-    unsigned next = 0;
-    for (unsigned warp = 0; warp < warps; ++warp) {
-        const Rows run = rows_of(warp, rows, warps);
-        if (run.begin != next || run.end < run.begin) {
-            return false;
-        }
-        next = run.end;
-    }
-    return next == rows;
-}
-
-// The proof for every matrix the megakernel multiplies, on this configuration's grid.
-template <MegakernelConfig C>
-constexpr bool rows_are_scheduled_once =
-    partitions(kQ, Grid<C>::warps) && partitions(kKvPerPos, Grid<C>::warps) &&
-    partitions(kEmbd, Grid<C>::warps) && partitions(kFf, Grid<C>::warps) &&
-    partitions(kVocab, Grid<C>::warps);
 
 template <MegakernelConfig C>
 __device__ Rows my_rows(unsigned rows) {
@@ -414,17 +371,6 @@ struct Step {
     float*                scratch;  // shared memory: one value per warp
 };
 
-// The buffers of a layer that its phases pass to each other, one bit each.
-enum Buffer : unsigned {
-    kResidual = 1 << 0, // the stream entering the layer: the layer before wrote it
-    kQkv      = 1 << 1, // Qcur, Kcur, Vcur
-    kPartials = 1 << 2, // each block's part of the attention softmax
-    kKqv      = 1 << 3, // kqv_out
-    kFfnInp   = 1 << 4,
-    kSwiglu   = 1 << 5,
-    kLayerOut = 1 << 6, // l_out: the stream entering the next layer
-};
-
 // A phase is a type: what every block does between two barriers. reads and writes are
 // sets of Buffer, and run does the work for the calling thread.
 template <class P, class C>
@@ -527,33 +473,18 @@ struct DownPhase {
     }
 };
 
-template <class... Ps>
-struct PhaseList {
-    static constexpr unsigned count = sizeof...(Ps);
-};
-
 // The schedule of one layer: its phases, in the order every block runs them. To swap a
 // phase, or to reorder, change this list.
 using LayerPhases = PhaseList<QkvPhase, AttentionPartPhase, AttentionMergePhase, OutputPhase,
                               FfnPhase, DownPhase>;
-
-// A barrier ends every phase, so a phase may read only what an earlier phase of the layer
-// wrote, or the stream that entered the layer. This is that rule, plus one writer per
-// buffer, plus a layer that does write its output.
-template <class... Ps>
-constexpr bool well_ordered(PhaseList<Ps...>) {
-    unsigned written = kResidual;
-    bool     ok      = true;
-    ((ok = ok && (Ps::reads & ~written) == 0 && (Ps::writes & written) == 0,
-      written |= Ps::writes),
-     ...);
-    return ok && (written & kLayerOut) != 0;
-}
 static_assert(well_ordered(LayerPhases{}),
-              "a phase reads a buffer no earlier phase wrote, or two phases write one buffer");
+              "LayerPhases: a phase reads a buffer that no earlier phase of the layer wrote");
+static_assert(one_writer_per_buffer(LayerPhases{}),
+              "LayerPhases: two phases write one buffer, or a phase writes the residual stream");
+static_assert(writes_layer_output(LayerPhases{}),
+              "LayerPhases: no phase writes l_out, the stream the next layer reads");
 
-// One barrier after the embedding, one after each phase of each layer, one after the logits.
-constexpr unsigned kBarriers = 2 + LayerPhases::count * static_cast<unsigned>(n_layer);
+constexpr unsigned kBarriers = barriers(LayerPhases{}, static_cast<unsigned>(n_layer));
 
 // Runs the phases of one layer, with a barrier after each.
 template <MegakernelConfig C, class... Ps>
@@ -570,8 +501,30 @@ __global__ void __launch_bounds__(C::threads, C::blocks_per_sm)
 megakernel(Weights weights, Trace* out, const Trace* in, typename C::Kv::Bits* k_cache,
            typename C::Kv::Bits* v_cache, const float* rope, AttnPartial* partials,
            MegaSync<C>* sync, unsigned token, unsigned pos, unsigned epoch) {
-    static_assert(grid_fits_model<C>, "this grid cannot run this model");
-    static_assert(rows_are_scheduled_once<C>, "a matrix row has no warp, or more than one");
+    // What this grid and row kernel must satisfy to run this model, one fact per assertion.
+    static_assert(whole_steps(kEmbd, C::RowKernel::step),
+                  "the row kernel's step does not divide n_embd, the width of q, k, v, gate, up "
+                  "and output: choose a row kernel with a smaller step");
+    static_assert(whole_steps(kQ, C::RowKernel::step),
+                  "the row kernel's step does not divide n_head * head_dim, the width of o: "
+                  "choose a row kernel with a smaller step");
+    static_assert(whole_steps(kFf, C::RowKernel::step),
+                  "the row kernel's step does not divide n_ff, the width of down: choose a row "
+                  "kernel with a smaller step");
+    static_assert(each_kv_head_has_a_block(Grid<C>::blocks, kKvHeads),
+                  "the grid has fewer blocks than the model has KV heads: raise blocks_per_sm");
+    static_assert(one_thread_per_group_dimension(Grid<C>::threads, kGroup, kHeadDim),
+                  "attention needs one thread per dimension of each query head of a group: set "
+                  "threads to n_head / n_head_kv * head_dim");
+    static_assert(split_fits_32_bits(kVocab, Grid<C>::warps),
+                  "warps * n_vocab does not fit in 32 bits, which rows_of computes in: lower "
+                  "blocks_per_sm");
+    static_assert(partitions(rows_of, kQ, Grid<C>::warps) &&
+                      partitions(rows_of, kKvPerPos, Grid<C>::warps) &&
+                      partitions(rows_of, kEmbd, Grid<C>::warps) &&
+                      partitions(rows_of, kFf, Grid<C>::warps) &&
+                      partitions(rows_of, kVocab, Grid<C>::warps),
+                  "rows_of gives a row of a matrix no warp, or more than one");
     // A matrix starts on general.alignment, and its rows are whole steps apart.
     static_assert(model::alignment % C::RowKernel::alignment == 0,
                   "general.alignment is not a multiple of the row kernel's alignment");

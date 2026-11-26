@@ -16,7 +16,7 @@ Every rule about structure in this codebase is one of these.
 | P2 | Typed handle | The type carries what is the same for every instance (shape, dtype). The value carries what differs (offset). | nowhere |
 | P3 | Policy by overload | A choice inside an algorithm is a tag type, and each implementation overloads on it. No flag, no branch. | nowhere: `llama_cpu_rounding` is a `bool` |
 | P4 | Type list, folded | An ordered list of types run by a fold expression. The schedule is a type. | `LayerPhases`, `run_layer` |
-| P5 | Proof as a constant | A `constexpr` function over plain numbers, asserted where it is used, and fed failing numbers by a host test. | `partitions`, `well_ordered`: asserted, never tested |
+| P5 | Proof as a constant | A `constexpr` function over plain numbers, asserted where it is used, and fed failing numbers by a host test. | `schedule.hpp`, tested by `schedule_test` |
 | P6 | Proof-carrying value | A run-time fact is checked once, and the result is a type only that check can make. | `VerifiedFile`, `Token`, `HostWeights` |
 | P7 | One build type | One type names one of each choice, and one translation unit instantiates the templates for it. | `EngineConfig`, without the model and with the GPU fixed |
 
@@ -86,7 +86,7 @@ runs of `forward --megakernel --generate 128`.
 |---|---|---|
 | 0 | **Done.** The gate as a script in the verify skill, with today's numbers: `verify.sh gate`. | every later "same speed" claim |
 | 1 | **Done.** Fix the bugs that give wrong output: the attention merge loads every member's partial, the shared buffer is sized by the widest vector, the row kernel's alignment is asserted, and `--generate` is range-checked. The repros are the verify skill's "Other shapes" recipe and three tests. | correctness on other shapes |
-| 2 | The proofs move to `schedule.hpp`, one assertion per fact, with a host test that feeds them failing numbers. | P5 |
+| 2 | **Done.** The proofs live in `src/megakernel/schedule.hpp`, and `megakernel.cu` asserts each fact with its own message. `tests/megakernel/schedule_test.cpp` feeds every proof failing numbers. | P5 |
 | 3 | The GPU type carries its CUDA architecture and its capacity. `MK_GPU` picks it, the build compiles one architecture, and capacity is asserted. `Rtx5070` as a compile-only target. | the hardware axis |
 | 4 | `VerifiedDevice<G>` replaces the two copies of the SM check. | P6 |
 | 5 | Typed tensor handles replace the offset tables and the dtype casts. | P2 |
