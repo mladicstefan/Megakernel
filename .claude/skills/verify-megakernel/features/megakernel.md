@@ -79,9 +79,9 @@ Preconditions:
   head_dim` to be 256 and every width to be a multiple of 256. Measured on 2026-11-26:
   - `512 1536 4 2 128 2 1024`: within tolerance with `--generate 700`, and the same 700
     tokens.
-  - `512 1536 8 2 64 2 1024`: within tolerance with `--generate 498`, `kqv_out` outside it
-    with `--generate 700` (rel L2 1.6e-1). From position 512 on, `attention_merge` has 4
-    query heads of more than 64 members to load, and 256 threads.
+  - `512 1536 8 2 64 2 1024`: within tolerance with `--generate 700` (`kqv_out` rel L2
+    1.6e-6), and the same 700 tokens. From position 512 on, `attention_merge` loads more
+    partials than a block has threads: 4 query heads of up to 66 members.
   - `512 512 8 4 128 2 1024`: `--generate 32` fails with `an illegal memory access was
     encountered`. The shared buffer `xs` holds `ff` floats, and the output projection
     loads `heads * head_dim`.

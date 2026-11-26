@@ -368,10 +368,15 @@ __device__ void attention_merge(unsigned kv_head, unsigned pos, const AttnPartia
     const unsigned   t = threadIdx.x;
     // Members past this one saw no position yet.
     const unsigned members = min(kMembers<C>, pos / Grid<C>::warps_per_block + 1);
-    if (t < kGroup * members) {
-        const AttnPartial& part = parts[(t / kGroup) * kKvHeads];
-        max[t % kGroup][t / kGroup] = fresh(&part.max[t % kGroup]);
-        sum[t % kGroup][t / kGroup] = fresh(&part.sum[t % kGroup]);
+    // A group of many members has more partials to load than the block has threads.
+    constexpr unsigned kRounds = (kGroup * kMembers<C> + Grid<C>::threads - 1) / Grid<C>::threads;
+    for (unsigned r = 0; r < kRounds; ++r) {
+        const unsigned i = r * Grid<C>::threads + t;
+        if (i < kGroup * members) {
+            const AttnPartial& part = parts[(i / kGroup) * kKvHeads];
+            max[i % kGroup][i / kGroup] = fresh(&part.max[i % kGroup]);
+            sum[i % kGroup][i / kGroup] = fresh(&part.sum[i % kGroup]);
+        }
     }
     __syncthreads();
     const unsigned h      = t / kHeadDim;
